@@ -1,0 +1,9 @@
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+data/chroma_db/
+*.egg-info/
+.vite/
+.DS_Store

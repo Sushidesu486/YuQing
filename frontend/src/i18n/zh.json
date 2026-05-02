@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "语晴",
+    "subtitle": "你的情感 AI 伙伴"
+  },
+  "chat": {
+    "placeholder": "和语晴说点什么...",
+    "newChat": "新对话",
+    "thinking": "正在思考...",
+    "error": "出错了，请重试",
+    "retry": "重试"
+  },
+  "sidebar": {
+    "title": "对话列表",
+    "empty": "还没有对话",
+    "delete": "删除",
+    "archive": "归档"
+  },
+  "settings": {
+    "title": "设置",
+    "personality": "人格设置",
+    "model": "模型设置",
+    "language": "语言",
+    "save": "保存",
+    "cancel": "取消",
+    "reset": "重置默认"
+  },
+  "emotion": {
+    "title": "情绪状态",
+    "current": "当前情绪",
+    "history": "情绪历史"
+  }
+}

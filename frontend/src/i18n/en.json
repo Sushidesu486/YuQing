@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "YuQing",
+    "subtitle": "Your Emotional AI Companion"
+  },
+  "chat": {
+    "placeholder": "Say something to YuQing...",
+    "newChat": "New Chat",
+    "thinking": "Thinking...",
+    "error": "Something went wrong, please retry",
+    "retry": "Retry"
+  },
+  "sidebar": {
+    "title": "Conversations",
+    "empty": "No conversations yet",
+    "delete": "Delete",
+    "archive": "Archive"
+  },
+  "settings": {
+    "title": "Settings",
+    "personality": "Personality",
+    "model": "Model",
+    "language": "Language",
+    "save": "Save",
+    "cancel": "Cancel",
+    "reset": "Reset to Default"
+  },
+  "emotion": {
+    "title": "Emotion State",
+    "current": "Current Emotion",
+    "history": "Emotion History"
+  }
+}
