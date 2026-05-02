@@ -37,13 +37,18 @@ CREATE TABLE IF NOT EXISTS memories (
     content TEXT NOT NULL,
     category VARCHAR(64) DEFAULT 'general',
     importance FLOAT DEFAULT 0.5,
+    original_importance FLOAT DEFAULT 0.5,
     source_conversation_id CHAR(32) DEFAULT NULL,
     source_message_id CHAR(32) DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_accessed DATETIME DEFAULT NULL,
     access_count INT DEFAULT 0,
+    is_consolidated TINYINT NOT NULL DEFAULT 0,
+    consolidated_from VARCHAR(255) DEFAULT NULL,
     FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
-    FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+    FOREIGN KEY (source_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+    INDEX idx_category_importance (category, importance),
+    INDEX idx_last_accessed (last_accessed)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS emotion_snapshots (
@@ -67,6 +72,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
 CREATE TABLE IF NOT EXISTS personality_config (
     id INT PRIMARY KEY CHECK (id = 1),
     config JSON NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS proactive_messages (
+    id CHAR(32) PRIMARY KEY,
+    conversation_id CHAR(32) NOT NULL,
+    trigger_type VARCHAR(32) NOT NULL,
+    message_content TEXT NOT NULL,
+    trigger_detail TEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    INDEX idx_proactive_time (conversation_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    preference_key VARCHAR(64) NOT NULL UNIQUE,
+    preference_value VARCHAR(255) NOT NULL DEFAULT '',
+    confidence FLOAT NOT NULL DEFAULT 0.0,
+    sample_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -112,6 +138,49 @@ async def init_db():
             await cur.execute(
                 "INSERT IGNORE INTO personality_config (id, config) VALUES (1, '{}')"
             )
+
+            # ── Migrations ──
+            # Get existing columns
+            await cur.execute("DESCRIBE memories")
+            existing_columns = {row[0] for row in await cur.fetchall()}
+
+            migrations = [
+                ("original_importance FLOAT DEFAULT 0.5", "original_importance"),
+                ("is_consolidated TINYINT NOT NULL DEFAULT 0", "is_consolidated"),
+                ("consolidated_from VARCHAR(255) DEFAULT NULL", "consolidated_from"),
+            ]
+
+            for col_def, col_name in migrations:
+                if col_name not in existing_columns:
+                    await cur.execute(f"ALTER TABLE memories ADD COLUMN {col_def}")
+                    logger.info(f"Migration: added column memories.{col_name}")
+
+            # Add indexes if missing (ignore error if already exists)
+            for idx_sql in [
+                "CREATE INDEX idx_category_importance ON memories (category, importance)",
+                "CREATE INDEX idx_last_accessed ON memories (last_accessed)",
+            ]:
+                try:
+                    await cur.execute(idx_sql)
+                except Exception:
+                    pass
+
+            # Backfill original_importance for existing memories
+            await cur.execute(
+                "UPDATE memories SET original_importance = importance "
+                "WHERE original_importance IS NULL OR original_importance = 0"
+            )
+
+            # Migration: add created_at to user_preferences
+            await cur.execute("DESCRIBE user_preferences")
+            pref_columns = {row[0] for row in await cur.fetchall()}
+            if "created_at" not in pref_columns:
+                await cur.execute(
+                    "ALTER TABLE user_preferences ADD COLUMN "
+                    "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER sample_count"
+                )
+                logger.info("Migration: added column user_preferences.created_at")
+
     logger.info("Database tables initialized")
 
 

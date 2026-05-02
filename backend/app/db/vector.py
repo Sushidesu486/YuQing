@@ -63,6 +63,18 @@ async def add_memory(memory_id: str, content: str, metadata: dict):
     )
 
 
+async def update_memory_metadata(memory_id: str, metadata: dict):
+    """Update metadata for an existing memory in the vector store."""
+    collection = await get_collection()
+    try:
+        collection.update(
+            ids=[memory_id],
+            metadatas=[metadata],
+        )
+    except Exception:
+        pass
+
+
 async def delete_memory(memory_id: str):
     """Remove a memory from the vector store."""
     collection = await get_collection()

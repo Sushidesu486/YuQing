@@ -30,6 +30,27 @@ class Settings(BaseSettings):
     MEMORY_RECALL_COUNT: int = 5
     AUTO_MEMORY_EXTRACTION: bool = True
 
+    # Memory decay & consolidation
+    MEMORY_DECAY_ENABLED: bool = True
+    MEMORY_DECAY_HALF_LIFE_DAYS: int = 90       # importance halved after 90 days without access
+    MEMORY_CONSOLIDATION_ENABLED: bool = True
+    MEMORY_CONSOLIDATION_MIN_COUNT: int = 20     # trigger consolidation when memories exceed this
+    MEMORY_DORMANT_DAYS: int = 30                 # memories not accessed for this long are "dormant"
+
+    # User preference learning
+    PREFERENCE_LEARNING_ENABLED: bool = True
+    PREFERENCE_LEARN_INTERVAL: int = 5           # learn every N exchanges
+
+    # Proactive messaging
+    PROACTIVE_ENABLED: bool = True
+    PROACTIVE_CHECK_INTERVAL_SECONDS: int = 120  # how often background task checks triggers
+    PROACTIVE_ABSENCE_THRESHOLD_HOURS: int = 4   # hours of silence before absence trigger
+    PROACTIVE_EMOTION_FOLLOWUP_HOURS: int = 3    # hours before following up on negative emotion
+    PROACTIVE_EMOTION_VALENCE_THRESHOLD: float = -0.4
+    PROACTIVE_MIN_HOURS_BETWEEN: int = 3         # minimum hours between any proactive messages
+    PROACTIVE_TIME_OF_DAY_ENABLED: bool = True
+    PROACTIVE_MEMORY_TRIGGER_ENABLED: bool = True
+
     # Debug
     LOG_LEVEL: str = "INFO"
 

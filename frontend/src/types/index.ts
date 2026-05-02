@@ -6,6 +6,7 @@ export interface Message {
   arousal?: number | null;
   model_used?: string;
   created_at?: string;
+  trigger_type?: string | null;
 }
 
 export interface Conversation {

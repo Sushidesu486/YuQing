@@ -8,6 +8,7 @@ from app.core.llm import stream_completion
 from app.core.memory import memory_manager
 from app.core.emotion import mood_regulator
 from app.core.personality import personality_engine
+from app.core.preferences import preference_learner
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -45,15 +46,34 @@ class CognitiveProcessor:
             conversation_id, user_message
         )
 
+        # Touch recalled memories (update access time)
+        for mem in recalled_memories:
+            try:
+                await memory_manager.touch_memory(mem["id"])
+            except Exception as e:
+                logger.debug(f"Failed to touch memory {mem.get('id')}: {e}")
+
         # --- Phase 4: Build system prompt ---
-        system_prompt = personality_engine.build_system_prompt(
+        system_prompt = await personality_engine.build_system_prompt(
             language=language,
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
             recalled_memories=recalled_memories,
         )
 
-        # --- Phase 5: Load recent messages for context ---
+        # --- Phase 5: Store user message (before loading context so it's included) ---
         pool = await get_pool()
+        user_msg_id = _generate_id()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                v = user_emotion["valence"] if user_emotion else None
+                a = user_emotion["arousal"] if user_emotion else None
+                await cur.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content, valence, arousal) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (user_msg_id, conversation_id, "user", user_message, v, a),
+                )
+
+        # --- Phase 6: Load recent messages for context (includes the just-stored user message) ---
         messages = [{"role": "system", "content": system_prompt}]
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -65,18 +85,6 @@ class CognitiveProcessor:
                 rows = await cur.fetchall()
         for row in reversed(rows):
             messages.append({"role": row["role"], "content": row["content"]})
-
-        # --- Phase 6: Store user message ---
-        user_msg_id = _generate_id()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                v = user_emotion["valence"] if user_emotion else None
-                a = user_emotion["arousal"] if user_emotion else None
-                await cur.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content, valence, arousal) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (user_msg_id, conversation_id, "user", user_message, v, a),
-                )
 
         # --- Phase 7: Stream LLM response ---
         assistant_msg_id = secrets.token_hex(16)
@@ -113,6 +121,29 @@ class CognitiveProcessor:
                     )
 
         # --- Phase 9: Background tasks ---
+
+        # Memory decay (run every ~10 exchanges based on conversation message count)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
+                        (conversation_id,),
+                    )
+                    row = await cur.fetchone()
+                    msg_count = row[0] if row else 0
+            if msg_count % 10 == 0:
+                await memory_manager.apply_decay()
+        except Exception as e:
+            logger.debug(f"Memory decay skipped: {e}")
+
+        # Memory consolidation (trigger when count exceeds threshold)
+        try:
+            await memory_manager.consolidate_memories()
+        except Exception as e:
+            logger.debug(f"Memory consolidation skipped: {e}")
+
         # Save emotion snapshot
         if user_emotion:
             try:
@@ -139,6 +170,25 @@ class CognitiveProcessor:
                     }
             except Exception as e:
                 logger.warning(f"Memory extraction failed: {e}")
+
+        # Learn user preferences (every N exchanges)
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
+                        (conversation_id,),
+                    )
+                    row = await cur.fetchone()
+                    msg_count = row[0] if row else 0
+            if msg_count % settings.PREFERENCE_LEARN_INTERVAL == 0:
+                learned = await preference_learner.learn_from_conversation(
+                    conversation_id, user_message, full_response
+                )
+                if learned:
+                    logger.info(f"Preferences learned: {learned}")
+        except Exception as e:
+            logger.debug(f"Preference learning skipped: {e}")
 
         # --- Done ---
         yield {

@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from app.config import settings
 from app.db.database import get_pool
+from app.core.preferences import preference_learner
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class PersonalityEngine:
                 )
         return self.get_personality()
 
-    def build_system_prompt(
+    async def build_system_prompt(
         self,
         language: str = "zh",
         current_mood: Optional[dict] = None,
@@ -92,16 +93,24 @@ class PersonalityEngine:
         personality = self.get_personality()
         template_name = f"system_{language}.txt.j2"
 
+        # Load learned user preferences
+        preference_hints = None
+        try:
+            prefs = await preference_learner.get_all_preferences()
+            preference_hints = preference_learner.get_prompt_hints(prefs)
+        except Exception as e:
+            logger.debug(f"Failed to load preferences: {e}")
+
         try:
             template = self._env.get_template(template_name)
         except Exception:
-            # Fallback to Chinese
             template = self._env.get_template("system_zh.txt.j2")
 
         return template.render(
             personality=personality,
             current_mood=current_mood,
             recalled_memories=recalled_memories or [],
+            preference_hints=preference_hints,
         )
 
 
