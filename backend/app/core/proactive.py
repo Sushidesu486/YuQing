@@ -307,6 +307,15 @@ async def proactive_background_task():
             if not settings.PROACTIVE_ENABLED:
                 continue
 
+            # Quiet hours check
+            if settings.PROACTIVE_QUIET_HOURS_START < settings.PROACTIVE_QUIET_HOURS_END:
+                now = datetime.now().hour
+                if settings.PROACTIVE_QUIET_HOURS_START <= now < settings.PROACTIVE_QUIET_HOURS_END:
+                    continue
+
+            if not settings.PROACTIVE_ENABLED:
+                continue
+
             conversation_id = await _get_active_conversation_id()
             if not conversation_id:
                 continue

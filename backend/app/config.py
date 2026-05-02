@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     PROACTIVE_MIN_HOURS_BETWEEN: int = 3         # minimum hours between any proactive messages
     PROACTIVE_TIME_OF_DAY_ENABLED: bool = True
     PROACTIVE_MEMORY_TRIGGER_ENABLED: bool = True
+    PROACTIVE_QUIET_HOURS_START: int = 0         # quiet hours start (0 = disabled)
+    PROACTIVE_QUIET_HOURS_END: int = 7           # quiet hours end (7am)
 
     # Debug
     LOG_LEVEL: str = "INFO"
