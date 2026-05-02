@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Message } from '../types';
 import { api } from '../services/api';
 
-interface SSEEvent {
+interface SSEData {
   type: string;
   content?: string;
   message_id?: string;
@@ -14,18 +14,18 @@ interface SSEEvent {
 }
 
 const CONVERSATION_KEY = 'yuqing_conversation_id';
-const COOLDOWN_MS = 10000; // 10 seconds cooldown before sending
+const COOLDOWN_MS = 10000;
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isTyping, setIsTyping] = useState(false); // true during cooldown AND while waiting for API
+  const [isTyping, setIsTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const abortRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef<string | null>(localStorage.getItem(CONVERSATION_KEY));
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingMessagesRef = useRef<string[]>([]);
-  const isSendingRef = useRef(false);
+  const pendingRef = useRef<string[]>([]);
+  const sendingRef = useRef(false);
+  const esRef = useRef<EventSource | null>(null);
 
   const initSession = useCallback(async () => {
     setLoading(true);
@@ -57,106 +57,115 @@ export function useChat() {
     }
   }, []);
 
-  const flushMessages = useCallback(async () => {
-    if (isSendingRef.current) return;
-    if (pendingMessagesRef.current.length === 0) return;
+  const flushMessages = useCallback(() => {
+    if (sendingRef.current) return;
+    const pending = pendingRef.current;
+    if (pending.length === 0) return;
 
-    isSendingRef.current = true;
-    const batch = pendingMessagesRef.current.join('\n');
-    pendingMessagesRef.current = [];
+    sendingRef.current = true;
+    pendingRef.current = [];
 
-    // Add assistant placeholder right before sending
-    const assistantMessage: Message = {
-      id: '',
-      role: 'assistant',
-      content: '',
-    };
-    setMessages((prev) => [...prev, assistantMessage]);
-    // isTyping stays true — bouncing dots will be replaced by "..." bubble then by content
+    // Add assistant placeholder
+    setMessages((prev) => [...prev, { id: '', role: 'assistant', content: '' }]);
 
-    abortRef.current = new AbortController();
+    // Build form data for POST (EventSource only supports GET, so we use fetch + EventSource differently)
+    // Actually, EventSource is GET-only. We need to use fetch for POST, but parse SSE manually.
+    // Instead, let's use a simpler approach: POST to send, then GET to stream.
+    const convId = conversationIdRef.current;
+    const batch = pending.join('\n');
+    const lang = localStorage.getItem('language') || 'zh';
 
-    try {
-      const response = await fetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversation_id: conversationIdRef.current,
-          message: batch,
-          language: localStorage.getItem('language') || 'zh',
-        }),
-        signal: abortRef.current.signal,
-      });
+    // POST the message first to get it stored
+    fetch('/api/chat/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: convId,
+        message: batch,
+        language: lang,
+      }),
+    }).then(async (postRes) => {
+      if (!postRes.ok) {
+        throw new Error(`HTTP ${postRes.status}`);
+      }
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body?.getReader();
+      // Read the full SSE response
+      const reader = postRes.body?.getReader();
       if (!reader) throw new Error('No response body');
 
       const decoder = new TextDecoder();
-      let buffer = '';
       let fullContent = '';
-
-      const processLine = (line: string) => {
-        if (!line.startsWith('data: ')) return;
-        try {
-          const data: SSEEvent = JSON.parse(line.slice(6));
-          if (data.type === 'token' && data.content) {
-            fullContent += data.content;
-          } else if (data.type === 'error') {
-            setError(data.error || 'Unknown error');
-          } else if (data.type === 'done') {
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                ...updated[updated.length - 1],
-                id: data.message_id || updated[updated.length - 1].id,
-                content: fullContent,
-                created_at: new Date().toISOString(),
-              };
-              return updated;
-            });
-            if (data.conversation_id) {
-              conversationIdRef.current = data.conversation_id;
-              localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
-            }
-          }
-        } catch {
-          // ignore malformed JSON
-        }
-      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const chunk = decoder.decode(value, { stream: true });
+        // Parse SSE format: lines starting with "data: " contain JSON
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
 
-        for (const line of lines) {
-          processLine(line);
+          try {
+            const data: SSEData = JSON.parse(jsonStr);
+            if (data.type === 'token' && data.content) {
+              fullContent += data.content;
+            } else if (data.type === 'error') {
+              console.error('SSE error:', data.error);
+              setError(data.error || 'Unknown error');
+            } else if (data.type === 'done') {
+              console.log('[Chat] done event received, content length:', fullContent.length);
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  id: data.message_id || updated[updated.length - 1].id,
+                  content: fullContent,
+                  created_at: new Date().toISOString(),
+                };
+                return updated;
+              });
+              if (data.conversation_id) {
+                conversationIdRef.current = data.conversation_id;
+                localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
+              }
+            }
+          } catch (e) {
+            // Malformed JSON line, skip
+          }
         }
       }
 
-      if (buffer.trim()) {
-        processLine(buffer);
+      // If done event was never received but we have content, update anyway
+      if (fullContent) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === 'assistant' && !last.content) {
+            updated[updated.length - 1] = {
+              ...last,
+              content: fullContent,
+              created_at: new Date().toISOString(),
+            };
+          }
+          return updated;
+        });
       }
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') return;
+    }).catch((err) => {
+      console.error('[Chat] flush error:', err);
       setError(err instanceof Error ? err.message : 'Unknown error');
+      // Remove the empty assistant placeholder on error
       setMessages((prev) => prev.slice(0, -1));
-    } finally {
-      isSendingRef.current = false;
+    }).finally(() => {
+      sendingRef.current = false;
+      setIsTyping(false);
 
-      // If more messages accumulated while we were sending, flush them
-      if (pendingMessagesRef.current.length > 0) {
-        // Small delay before sending next batch
+      // If more messages accumulated, flush after a short delay
+      if (pendingRef.current.length > 0) {
         setTimeout(() => flushMessages(), 500);
-      } else {
-        setIsTyping(false);
       }
-    }
+    });
   }, []);
 
   const sendMessage = useCallback(
@@ -166,15 +175,13 @@ export function useChat() {
       setError(null);
 
       // Add user message to UI immediately
-      const userMessage: Message = {
-        id: `temp-${Date.now()}`,
-        role: 'user',
-        content: content.trim(),
-      };
-      setMessages((prev) => [...prev, userMessage]);
+      setMessages((prev) => [
+        ...prev,
+        { id: `temp-${Date.now()}`, role: 'user', content: content.trim() },
+      ]);
 
       // Queue the message
-      pendingMessagesRef.current.push(content.trim());
+      pendingRef.current.push(content.trim());
 
       // Reset cooldown timer
       if (cooldownTimerRef.current) {
@@ -184,33 +191,40 @@ export function useChat() {
       // Show typing indicator during cooldown
       setIsTyping(true);
 
-      // Set timer to flush after cooldown
+      // Flush after cooldown
       cooldownTimerRef.current = setTimeout(() => {
         cooldownTimerRef.current = null;
-        if (!isSendingRef.current) {
+        if (!sendingRef.current) {
           flushMessages();
         }
       }, COOLDOWN_MS);
     },
-    [flushMessages]
+    [flushMessages],
   );
 
-  // Cleanup timer on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (cooldownTimerRef.current) {
-        clearTimeout(cooldownTimerRef.current);
-      }
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      if (esRef.current) esRef.current.close();
     };
   }, []);
 
   const addProactiveMessage = useCallback((message: Message) => {
     setMessages((prev) => {
-      // Dedup: don't add if already in list
       if (prev.some((m) => m.id === message.id)) return prev;
       return [...prev, message];
     });
   }, []);
 
-  return { messages, isTyping, error, loading, sendMessage, initSession, addProactiveMessage, conversationId: conversationIdRef.current };
+  return {
+    messages,
+    isTyping,
+    error,
+    loading,
+    sendMessage,
+    initSession,
+    addProactiveMessage,
+    conversationId: conversationIdRef.current,
+  };
 }

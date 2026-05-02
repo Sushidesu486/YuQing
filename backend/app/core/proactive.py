@@ -223,7 +223,14 @@ class ProactiveManager:
 
     async def execute_trigger(self, conversation_id: str, trigger: dict):
         """Generate message, store in DB, push to queue."""
-        content = await self._generate_message(trigger)
+        try:
+            content = await asyncio.wait_for(
+                self._generate_message(trigger),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Proactive message generation timed out for {trigger['trigger_type']}")
+            return
 
         if not content or len(content) < 2:
             logger.warning(f"Empty proactive message for {trigger['trigger_type']}")
@@ -243,7 +250,7 @@ class ProactiveManager:
                     "INSERT INTO proactive_messages (id, conversation_id, trigger_type, message_content, trigger_detail) "
                     "VALUES (%s, %s, %s, %s, %s)",
                     (_generate_id(), conversation_id, trigger["trigger_type"],
-                     content, json.dumps(trigger["trigger_detail"], ensure_ascii=False)),
+                     content, json.dumps(trigger["trigger_detail"], ensure_ascii=True)),
                 )
 
         logger.info(f"Proactive message sent ({trigger['trigger_type']}): {content[:50]}")
@@ -255,7 +262,7 @@ class ProactiveManager:
             "conversation_id": conversation_id,
             "content": content,
             "trigger_type": trigger["trigger_type"],
-        }, ensure_ascii=False)
+        }, ensure_ascii=True)
 
         try:
             _proactive_queue.put_nowait({"event": "proactive", "data": event_data})
@@ -289,6 +296,9 @@ async def _get_active_conversation_id() -> Optional[str]:
 async def proactive_background_task():
     """Main background loop for proactive message checks."""
     logger.info("Proactive message background task started")
+
+    # Wait 60 seconds before first check to let the server fully start up
+    await asyncio.sleep(60)
 
     while True:
         try:

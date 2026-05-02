@@ -34,7 +34,7 @@ class CognitiveProcessor:
         user_emotion = None
         try:
             user_emotion = await mood_regulator.analyze_message_emotion(user_message)
-            yield {"event": "emotion", "data": json.dumps({"type": "emotion", "valence": user_emotion["valence"], "arousal": user_emotion["arousal"], "dominant_emotion": user_emotion["label"]}, ensure_ascii=False)}
+            yield {"event": "emotion", "data": json.dumps({"type": "emotion", "valence": user_emotion["valence"], "arousal": user_emotion["arousal"], "dominant_emotion": user_emotion["label"]}, ensure_ascii=True)}
         except Exception as e:
             logger.warning(f"User emotion analysis failed: {e}")
 
@@ -93,11 +93,13 @@ class CognitiveProcessor:
         try:
             async for chunk in stream_completion(messages):
                 full_response += chunk
-                yield {"event": "token", "data": json.dumps({"type": "token", "content": chunk}, ensure_ascii=False)}
+                yield {"event": "token", "data": json.dumps({"type": "token", "content": chunk}, ensure_ascii=True)}
         except Exception as e:
             logger.error(f"LLM stream error: {e}")
-            yield {"event": "error", "data": json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False)}
+            yield {"event": "error", "data": json.dumps({"type": "error", "error": str(e)}, ensure_ascii=True)}
             return
+
+        logger.info(f"LLM response ({len(full_response)} chars): {full_response[:200]}...")
 
         # --- Phase 8: Store assistant message ---
         async with pool.acquire() as conn:
@@ -166,7 +168,7 @@ class CognitiveProcessor:
                 if extracted:
                     yield {
                         "event": "memory_extracted",
-                        "data": json.dumps({"type": "memory_extracted", "count": len(extracted)}, ensure_ascii=False),
+                        "data": json.dumps({"type": "memory_extracted", "count": len(extracted)}, ensure_ascii=True),
                     }
             except Exception as e:
                 logger.warning(f"Memory extraction failed: {e}")
@@ -195,7 +197,7 @@ class CognitiveProcessor:
             "event": "done",
             "data": json.dumps(
                 {"type": "done", "message_id": assistant_msg_id, "conversation_id": conversation_id},
-                ensure_ascii=False,
+                ensure_ascii=True,
             ),
         }
 
