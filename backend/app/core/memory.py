@@ -2,16 +2,18 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional
+
+from mem0 import Memory
 
 import aiomysql
 
 from app.config import settings
 from app.db.database import get_pool, _generate_id
-from app.db import vector as vector_db
-from app.core.llm import generate_completion
 
 logger = logging.getLogger(__name__)
+
+# ── mem0 fallback prompts (used only when MEM0_ENABLED=False) ──
 
 MEMORY_EXTRACT_PROMPT_ZH = """分析以下对话，提取关于用户的重要信息。只提取值得长期记住的内容，包括：
 - 用户的事实信息（姓名、喜好、职业等）
@@ -64,6 +66,50 @@ CONSOLIDATE_PROMPT_ZH = """以下是关于同一个用户的若干条记忆，�
 
 只返回JSON，不要其他文字。"""
 
+# ── mem0 singleton ──
+
+_mem0_client: Optional[Memory] = None
+_MEM0_USER_ID = "default"
+
+
+def _get_mem0() -> Memory:
+    global _mem0_client
+    if _mem0_client is None:
+        config = {
+            "llm": {
+                "provider": "litellm",
+                "config": {
+                    "model": settings.LITELLM_MODEL,
+                    "api_key": settings.LITELLM_API_KEY,
+                    "temperature": 0.1,
+                },
+            },
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "collection_name": "long_term_memory",
+                    "path": settings.chroma_abs_path,
+                },
+            },
+            "embedder": {
+                "provider": "huggingface",
+                "config": {
+                    "model": settings.MEM0_EMBEDDING_MODEL or "BAAI/bge-small-zh-v1.5",
+                },
+            },
+        }
+        if settings.LITELLM_API_BASE:
+            config["llm"]["config"]["api_base"] = settings.LITELLM_API_BASE
+
+        _mem0_client = Memory.from_config(config)
+        logger.info("mem0 Memory client initialized")
+    return _mem0_client
+
+
+def init_mem0():
+    """Initialize mem0 client (call during startup)."""
+    _get_mem0()
+
 
 class MemoryManager:
 
@@ -91,15 +137,14 @@ class MemoryManager:
         for row in reversed(rows):
             messages_context.append({"role": row["role"], "content": row["content"]})
 
-        # 2. Vector search for relevant long-term memories
-        recalled = await vector_db.search_memories(
+        # 2. Search memories via mem0 or MySQL fallback
+        recalled = await self.search_memories(
             user_message, top_k=settings.MEMORY_RECALL_COUNT
         )
 
         # 3. Dormant memory reactivation
         dormant = await self.get_dormant_memories(user_message)
         for d in dormant:
-            # Avoid duplicates
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
@@ -114,13 +159,92 @@ class MemoryManager:
         assistant_response: str,
         language: str = "zh",
     ) -> list:
-        """Use LLM to extract memorable facts and store them."""
+        """Extract memorable facts and store them."""
+        if settings.MEM0_ENABLED:
+            return await self._extract_via_mem0(
+                conversation_id, user_message, assistant_response
+            )
+        return await self._extract_via_llm(
+            conversation_id, user_message, assistant_response, language
+        )
+
+    async def _extract_via_mem0(
+        self,
+        conversation_id: str,
+        user_message: str,
+        assistant_response: str,
+    ) -> list:
+        """Use mem0.add() to extract and store memories automatically."""
         conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
 
+        try:
+            mem0 = _get_mem0()
+            result = mem0.add(
+                conversation_text,
+                user_id=_MEM0_USER_ID,
+                metadata={"source_conversation_id": conversation_id},
+            )
+        except Exception as e:
+            logger.error(f"mem0.add() failed: {e}")
+            return []
+
+        stored = []
+        if result and "results" in result:
+            for mem in result["results"]:
+                mem_id = mem.get("id")
+                content = mem.get("memory", "").strip()
+                if not content:
+                    continue
+
+                # Infer category from mem0 metadata or default
+                metadata = mem.get("metadata", {})
+                category = metadata.get("category", "general")
+
+                # Write to MySQL for CRUD compatibility
+                try:
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            # Avoid duplicates
+                            await cur.execute(
+                                "SELECT id FROM memories WHERE id = %s", (mem_id,)
+                            )
+                            if await cur.fetchone():
+                                stored.append({"id": mem_id, "content": content, "category": category})
+                                continue
+
+                            await cur.execute(
+                                "INSERT INTO memories (id, content, category, importance, "
+                                "original_importance, source_conversation_id) "
+                                "VALUES (%s, %s, %s, %s, %s, %s)",
+                                (mem_id, content, category, 0.5, 0.5, conversation_id),
+                            )
+                    stored.append({"id": mem_id, "content": content, "category": category})
+                except Exception as e:
+                    logger.warning(f"Failed to sync mem0 memory to MySQL: {e}")
+
+        if stored:
+            logger.info(
+                f"mem0: extracted {len(stored)} memories from conversation {conversation_id[:8]}"
+            )
+        return stored
+
+    async def _extract_via_llm(
+        self,
+        conversation_id: str,
+        user_message: str,
+        assistant_response: str,
+        language: str = "zh",
+    ) -> list:
+        """Fallback: use LLM to extract memories (legacy path)."""
+        from app.core.llm import generate_completion
+
+        conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
         prompt_template = (
             MEMORY_EXTRACT_PROMPT_ZH if language == "zh" else MEMORY_EXTRACT_PROMPT_EN
         )
-        prompt = prompt_template.format(conversation=conversation_text)
+        # Safe substitution: only replace the known placeholder
+        prompt = prompt_template.replace("{conversation}", conversation_text)
 
         try:
             result = await generate_completion(
@@ -131,7 +255,6 @@ class MemoryManager:
             logger.error(f"Memory extraction LLM call failed: {e}")
             return []
 
-        # Parse JSON from response
         try:
             text = result.strip()
             if text.startswith("```"):
@@ -163,38 +286,72 @@ class MemoryManager:
                         "VALUES (%s, %s, %s, %s, %s, %s)",
                         (mem_id, content, category, importance, importance, conversation_id),
                     )
-
-            await vector_db.add_memory(
-                memory_id=mem_id,
-                content=content,
-                metadata={"category": category, "importance": importance},
-            )
             stored.append({"id": mem_id, "content": content, "category": category})
 
         if stored:
             logger.info(f"Extracted {len(stored)} memories from conversation {conversation_id[:8]}")
-
         return stored
+
+    # ── Memory search ──
+
+    async def search_memories(self, query: str, top_k: int = 5) -> list:
+        """Search long-term memories by query."""
+        if settings.MEM0_ENABLED:
+            return await self._search_via_mem0(query, top_k)
+        return await self._search_via_mysql(query, top_k)
+
+    async def _search_via_mem0(self, query: str, top_k: int) -> list:
+        """Search via mem0.search() — returns hybrid (semantic + entity) results."""
+        try:
+            mem0 = _get_mem0()
+            results = mem0.search(query, user_id=_MEM0_USER_ID, limit=top_k)
+        except Exception as e:
+            logger.warning(f"mem0.search() failed: {e}")
+            return []
+
+        memories = []
+        if results and "results" in results:
+            for r in results["results"]:
+                memories.append({
+                    "id": r.get("id", ""),
+                    "content": r.get("memory", ""),
+                    "distance": 1.0 - r.get("score", 0.0),  # score → distance
+                    "metadata": r.get("metadata", {}),
+                })
+        return memories
+
+    async def _search_via_mysql(self, query: str, top_k: int) -> list:
+        """Fallback: return recent high-importance memories from MySQL."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, category, importance FROM memories "
+                    "WHERE is_consolidated = 0 AND importance > 0.2 "
+                    "ORDER BY importance DESC LIMIT %s",
+                    (top_k,),
+                )
+                rows = await cur.fetchall()
+        return [
+            {"id": r["id"], "content": r["content"], "distance": 0.0,
+             "metadata": {"category": r["category"], "importance": r["importance"]}}
+            for r in rows
+        ]
 
     # ── Memory decay ──
 
     async def apply_decay(self):
-        """Decay importance of memories based on time since last access.
-
-        Uses exponential decay: importance = original * (0.5 ^ (days / half_life))
-        Memories with decayed importance below 0.05 are candidates for cleanup.
-        """
+        """Decay importance of memories based on time since last access."""
         if not settings.MEMORY_DECAY_ENABLED:
             return
 
         half_life = settings.MEMORY_DECAY_HALF_LIFE_DAYS
         now = datetime.utcnow()
-        cutoff = now - timedelta(days=int(half_life * 5))  # ~5 half-lives = ~97% decayed
+        cutoff = now - timedelta(days=int(half_life * 5))
 
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                # Get memories that have been accessed at least once and haven't been decayed recently
                 await cur.execute(
                     "SELECT id, original_importance, last_accessed, access_count "
                     "FROM memories "
@@ -213,13 +370,10 @@ class MemoryManager:
 
             days_since_access = (now - row["last_accessed"]).total_seconds() / 86400
             original = row["original_importance"] or 0.5
-
-            # Exponential decay, with access_count boosting resistance
-            access_bonus = min(row["access_count"] * 5, 30)  # each access adds 5 days resistance
+            access_bonus = min(row["access_count"] * 5, 30)
             effective_days = max(0, days_since_access - access_bonus)
-
             new_importance = original * math.pow(0.5, effective_days / half_life)
-            new_importance = max(0.01, new_importance)  # floor at 0.01
+            new_importance = max(0.01, new_importance)
 
             if abs(new_importance - original) > 0.01:
                 async with pool.acquire() as conn:
@@ -228,10 +382,13 @@ class MemoryManager:
                             "UPDATE memories SET importance = %s WHERE id = %s",
                             (new_importance, row["id"]),
                         )
-                        # Sync to ChromaDB metadata
-                        await vector_db.update_memory_metadata(
-                            row["id"], {"importance": new_importance}
-                        )
+                # Sync to mem0 metadata if enabled
+                if settings.MEM0_ENABLED:
+                    try:
+                        mem0 = _get_mem0()
+                        mem0.update(row["id"], metadata={"importance": new_importance})
+                    except Exception:
+                        pass
                 updated += 1
 
         if updated:
@@ -240,9 +397,7 @@ class MemoryManager:
     # ── Dormant memory reactivation ──
 
     async def get_dormant_memories(self, query: str, top_k: int = 2) -> list:
-        """Find memories not accessed for MEMORY_DORMANT_DAYS that are semantically
-        relevant to the current query. These are surfaced as 'creative potential' insights."""
-
+        """Find memories not accessed for MEMORY_DORMANT_DAYS."""
         if not settings.MEMORY_DECAY_ENABLED:
             return []
 
@@ -265,55 +420,56 @@ class MemoryManager:
         if not dormant_rows:
             return []
 
-        # Score dormant memories by semantic similarity to query
-        collection = await vector_db.get_collection()
-        if collection.count() == 0:
-            return []
+        # Use mem0 search to rank dormant memories by relevance
+        if settings.MEM0_ENABLED:
+            try:
+                mem0 = _get_mem0()
+                all_memories = mem0.get_all(user_id=_MEM0_USER_ID)
+                mem_map = {}
+                if all_memories and "results" in all_memories:
+                    for m in all_memories["results"]:
+                        mem_map[m.get("id")] = m
 
-        try:
-            query_result = collection.query(
-                query_texts=[query],
-                ids=[r["id"] for r in dormant_rows],
-                n_results=min(top_k * 3, len(dormant_rows)),
-            )
-        except Exception:
-            # ChromaDB doesn't support filtering by IDs in query well,
-            # fall back to general query
-            query_result = collection.query(
-                query_texts=[query],
-                n_results=min(top_k, collection.count()),
-            )
-
-        results = []
-        if query_result and query_result["ids"] and query_result["ids"][0]:
-            dormant_ids = {r["id"]: r for r in dormant_rows}
-            for i, mem_id in enumerate(query_result["ids"][0]):
-                if mem_id in dormant_ids:
-                    row = dormant_ids[mem_id]
-                    days_dormant = (datetime.utcnow() - (row["last_accessed"] or row["created_at"])).days
-                    results.append({
-                        "id": row["id"],
-                        "content": row["content"],
-                        "category": row["category"],
-                        "importance": row["importance"],
-                        "distance": query_result["distances"][0][i] if query_result["distances"] else 1.0,
-                        "dormant_days": days_dormant,
-                        "_is_dormant": True,
-                    })
+                results = []
+                dormant_ids = {r["id"]: r for r in dormant_rows}
+                for r in dormant_rows:
+                    if r["id"] in mem_map:
+                        results.append({
+                            "id": r["id"],
+                            "content": r["content"],
+                            "category": r["category"],
+                            "importance": r["importance"],
+                            "distance": 0.0,
+                            "metadata": {"category": r["category"], "importance": r["importance"]},
+                            "dormant_days": (now - (r["last_accessed"] or r["created_at"])).days,
+                            "_is_dormant": True,
+                        })
                     if len(results) >= top_k:
                         break
+                return results[:top_k]
+            except Exception:
+                pass
 
+        # Fallback: just return top-k by importance
+        results = []
+        for r in dormant_rows[:top_k]:
+            days_dormant = (datetime.utcnow() - (r["last_accessed"] or r["created_at"])).days
+            results.append({
+                "id": r["id"],
+                "content": r["content"],
+                "category": r["category"],
+                "importance": r["importance"],
+                "distance": 0.0,
+                "metadata": {"category": r["category"], "importance": r["importance"]},
+                "dormant_days": days_dormant,
+                "_is_dormant": True,
+            })
         return results
 
     # ── Memory consolidation ──
 
     async def consolidate_memories(self) -> int:
-        """Find groups of similar memories and merge them using LLM.
-
-        Triggers when total memories exceed MEMORY_CONSOLIDATION_MIN_COUNT.
-        Groups memories by category, then uses LLM to merge similar ones.
-        Returns number of memories consolidated.
-        """
+        """Find groups of similar memories and merge them."""
         if not settings.MEMORY_CONSOLIDATION_ENABLED:
             return 0
 
@@ -327,10 +483,11 @@ class MemoryManager:
         if total < settings.MEMORY_CONSOLIDATION_MIN_COUNT:
             return 0
 
-        consolidated_count = 0
+        from app.core.llm import generate_completion
 
-        # Group by category and consolidate
+        consolidated_count = 0
         categories = ["fact", "preference", "event", "emotion_pattern"]
+
         for category in categories:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -345,14 +502,16 @@ class MemoryManager:
             if len(rows) < 3:
                 continue
 
-            # Use LLM to merge similar memories
             memories_text = "\n".join(
                 f"[{r['id']}] {r['content']} (重要性: {r['importance']})" for r in rows
             )
 
+            # Safe substitution
+            prompt = CONSOLIDATE_PROMPT_ZH.replace("{memories}", memories_text)
+
             try:
                 result = await generate_completion(
-                    messages=[{"role": "user", "content": CONSOLIDATE_PROMPT_ZH.format(memories=memories_text)}],
+                    messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                 )
             except Exception as e:
@@ -372,7 +531,6 @@ class MemoryManager:
             if not isinstance(merged, list) or not merged:
                 continue
 
-            # For each merged memory, mark originals as consolidated and create new one
             for new_mem in merged:
                 source_ids = new_mem.get("source_ids", [])
                 content = new_mem.get("content", "").strip()
@@ -384,14 +542,11 @@ class MemoryManager:
 
                 async with pool.acquire() as conn:
                     async with conn.cursor() as cur:
-                        # Mark source memories as consolidated
                         placeholders = ",".join(["%s"] * len(source_ids))
                         await cur.execute(
                             f"UPDATE memories SET is_consolidated = 1 WHERE id IN ({placeholders})",
                             tuple(source_ids),
                         )
-
-                        # Insert consolidated memory (is_consolidated=0: this is the active version)
                         await cur.execute(
                             "INSERT INTO memories (id, content, category, importance, "
                             "original_importance, is_consolidated, consolidated_from, "
@@ -402,16 +557,19 @@ class MemoryManager:
                              source_ids[0] if source_ids else None),
                         )
 
-                # Add to ChromaDB
-                await vector_db.add_memory(
-                    memory_id=new_id,
-                    content=content,
-                    metadata={"category": category, "importance": importance},
-                )
-
-                # Remove old entries from ChromaDB
-                for old_id in source_ids:
-                    await vector_db.delete_memory(old_id)
+                # Sync with mem0: add new, delete old
+                if settings.MEM0_ENABLED:
+                    try:
+                        mem0 = _get_mem0()
+                        mem0.add(
+                            content,
+                            user_id=_MEM0_USER_ID,
+                            metadata={"category": category, "importance": importance},
+                        )
+                        for old_id in source_ids:
+                            mem0.delete(old_id)
+                    except Exception as e:
+                        logger.warning(f"mem0 consolidation sync failed: {e}")
 
                 consolidated_count += 1
 
@@ -434,10 +592,6 @@ class MemoryManager:
                 )
 
     # ── CRUD ──
-
-    async def search_memories(self, query: str, top_k: int = 5) -> list:
-        """Search long-term memories by query."""
-        return await vector_db.search_memories(query, top_k=top_k)
 
     async def list_memories(
         self, category: Optional[str] = None, limit: int = 50
@@ -463,11 +617,18 @@ class MemoryManager:
         return rows
 
     async def delete_memory(self, memory_id: str):
+        """Delete memory from both MySQL and mem0."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
-        await vector_db.delete_memory(memory_id)
+
+        if settings.MEM0_ENABLED:
+            try:
+                mem0 = _get_mem0()
+                mem0.delete(memory_id)
+            except Exception as e:
+                logger.warning(f"mem0.delete() failed for {memory_id}: {e}")
 
 
 memory_manager = MemoryManager()

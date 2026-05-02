@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
-from app.db.vector import init_chroma
+from app.core.memory import init_mem0
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
 
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting YuQing...")
     await init_db()
-    await init_chroma()
-    logger.info("Database and ChromaDB ready")
+    init_mem0()
+    logger.info("Database and mem0 ready")
 
     # Start proactive background task
     task = asyncio.create_task(proactive_background_task())

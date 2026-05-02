@@ -39,15 +39,15 @@
 │  Phase 1:  用户情绪分析 (V-A 模型)                             │
 │  Phase 2:  用户当前情绪状态                                    │
 │  Phase 2.5: 语晴自身心情更新 ← NEW                            │
-│  Phase 3:  记忆召回 (ChromaDB 语义搜索)                       │
+│  Phase 3:  记忆召回 (mem0 混合检索)                           │
 │  Phase 4:  人格 prompt 构建 (Jinja2)                          │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成               │
-│  Phase 9:  记忆提取 / 偏好学习 / 记忆衰减 / 记忆巩固            │
+│  Phase 9:  记忆提取(mem0) / 偏好学习 / 记忆衰减 / 记忆巩固      │
 │                                                              │
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
 │  │Personality │ │  Memory  │ │ Emotion  │ │  YuQing Mood  │   │
 │  │  Engine    │ │ Manager  │ │Regulator │ │   Tracker     │   │
-│  │ YAML+Jinja │ │MySQL+Vec │ │ V-A LLM  │ │  EMA + 关键词 │   │
+│  │ YAML+Jinja │ │mem0+MySQL│ │ V-A LLM  │ │  EMA + 关键词 │   │
 │  └───────────┘ └──────────┘ └──────────┘ └───────────────┘   │
 │                                                              │
 │  ┌───────────────┐ ┌──────────────┐ ┌────────────────────┐  │
@@ -64,7 +64,8 @@
 |------|------|------|
 | Web 框架 | **FastAPI** (Python, async) | 异步，高性能 |
 | 数据库 | **MySQL 9** | 结构化数据持久化 |
-| 向量检索 | **ChromaDB** | 长期记忆语义搜索 |
+| 记忆引擎 | **mem0 v2** + ChromaDB | 自动提取 + 混合检索 + 中文嵌入 |
+| 嵌入模型 | **BAAI/bge-small-zh-v1.5** | 本地中文向量嵌入（无需额外 API） |
 | LLM 接口 | **litellm** | 一套代码切换多家 API |
 | 模板引擎 | **Jinja2** | 动态生成 system prompt |
 
@@ -90,13 +91,13 @@
 - 当前对话的短期记忆，关闭页面后丢失
 
 **长期记忆（Long-term Memory）**
-- 每次对话后，LLM 自动分析并提取值得记住的信息
-- 存入 MySQL（结构化）+ ChromaDB（向量化）
+- 每次对话后，mem0 自动分析并提取值得记住的信息（内置去重）
+- 存入 MySQL（结构化元数据）+ mem0/ChromaDB（向量化 + 语义检索）
 - 4 个类别：`fact`（事实）、`preference`（偏好）、`event`（事件）、`emotion_pattern`（情感模式）
 - 每条记忆带重要性评分（0~1），影响检索优先级
 
 **记忆召回**
-- 每次收到新消息，用 ChromaDB 做语义相似度搜索，召回最相关的 5 条记忆
+- 每次收到新消息，用 mem0 混合检索（语义相似度 + 实体匹配）召回最相关的 5 条记忆
 - 召回的记忆注入 system prompt，让语晴能"想起来"之前说过的话
 
 **记忆生命周期**
@@ -266,7 +267,7 @@ yuqing/
 │       ├── config.py                 # 配置管理（pydantic-settings）
 │       ├── core/
 │       │   ├── cognitive.py          # CognitiveProcessor — 认知处理器（总编排）
-│       │   ├── memory.py             # MemoryManager — 记忆管理（衰减/巩固/召回）
+│       │   ├── memory.py             # MemoryManager — 记忆管理（mem0集成+衰减/巩固/召回）
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
@@ -274,8 +275,7 @@ yuqing/
 │       │   ├── proactive.py          # ProactiveManager — 主动消息系统
 │       │   └── llm.py                # litellm 封装（流式/非流式）
 │       ├── db/
-│       │   ├── database.py           # MySQL 建表 + 连接池（9 张表）
-│       │   └── vector.py             # ChromaDB 向量存储
+│       │   └── database.py           # MySQL 建表 + 连接池（9 张表）
 │       ├── prompts/
 │       │   ├── system_zh.txt.j2      # 中文 system prompt 模板
 │       │   └── system_en.txt.j2      # 英文 system prompt 模板
@@ -332,6 +332,8 @@ yuqing/
 | `MEMORY_DECAY_HALF_LIFE_DAYS` | 90 | 记忆重要性减半天数 |
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
+| `MEM0_ENABLED` | true | 是否启用 mem0 记忆引擎 |
+| `MEM0_EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，无需额外 API） |
 
 ### 主动消息参数（.env）
 
@@ -418,7 +420,7 @@ yuqing/
 | **定位** | 研究/教育平台完整认知架构 | 个人情感 AI 伙伴 |
 | **LLM** | 仅 OpenAI GPT-4 | 多模型支持（litellm） |
 | **数据库** | SQLite | MySQL 9（生产级） |
-| **向量检索** | 未内置 | ChromaDB |
+| **向量检索** | 未内置 | mem0 + ChromaDB + BGE 中文嵌入 |
 | **用户系统** | 多用户注册 | 单用户，无认证 |
 | **情绪系统** | 12 类关键词检测 + 心理健康追踪 | V-A 模型 + LLM 分析 + 语晴自身心情 |
 | **主动行为** | 无 | 4 种触发器 + 后台任务 + SSE 推送 |

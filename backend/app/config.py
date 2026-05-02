@@ -57,9 +57,13 @@ class Settings(BaseSettings):
     YUQING_MOOD_ENABLED: bool = True
     YUQING_MOOD_EMA_ALPHA: float = 0.15          # new signal weight in EMA
     YUQING_MOOD_HOURLY_DECAY: float = 0.02       # per-dimension decay per hour of absence
-    YUQING_MOOD_BASELINE_WARMTH: float = 0.30
-    YUQING_MOOD_BASELINE_OPENNESS: float = 0.35
+    YUQING_MOOD_BASELINE_WARMTH: float = 0.40
+    YUQING_MOOD_BASELINE_OPENNESS: float = 0.45
     YUQING_MOOD_BASELINE_ENERGY: float = 0.45
+
+    # mem0
+    MEM0_ENABLED: bool = True
+    MEM0_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"  # HuggingFace 本地中文嵌入模型
 
     # Debug
     LOG_LEVEL: str = "INFO"
