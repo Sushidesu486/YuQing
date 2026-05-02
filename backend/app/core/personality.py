@@ -89,6 +89,7 @@ class PersonalityEngine:
         language: str = "zh",
         current_mood: Optional[dict] = None,
         recalled_memories: Optional[list] = None,
+        yuqing_mood: Optional[dict] = None,
     ) -> str:
         personality = self.get_personality()
         template_name = f"system_{language}.txt.j2"
@@ -111,6 +112,7 @@ class PersonalityEngine:
             current_mood=current_mood,
             recalled_memories=recalled_memories or [],
             preference_hints=preference_hints,
+            yuqing_mood=yuqing_mood,
         )
 
 

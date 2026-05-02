@@ -15,20 +15,19 @@ PREFERENCE_LEARN_PROMPT_ZH = """分析以下对话，推断用户的沟通偏好
 最近对话：
 {conversation}
 
-请以JSON格式返回推断的用户偏好，每个偏好包含：
-- "key": 偏好标识符（只能是以下之一）
-- "value": 推断的值
-- "confidence": 置信度（0.0-1.0，基于证据的强弱）
+请以JSON格式返回推断的用户偏好。JSON对象的键是偏好名称，值是偏好值。
 
-可识别的偏好：
-1. response_length: 用户偏好的回复长度 — "concise"（简短）/ "moderate"（适中）/ "detailed"（详细）
-2. topic_style: 用户喜欢的话题风格 — "casual"（日常闲聊）/ "technical"（技术讨论）/ "emotional"（情感分享）/ "philosophical"（哲学思辨）
-3. emotional_tone: 用户对语晴情感表达方式的接受度 — "cold_ok"（接受冷淡）/ "warm_preferred"（偏好温暖）/ "teasing_enjoyed"（享受调侃）/ "mixed"（看情况）
-4. humor_level: 用户对幽默的偏好 — "dry"（干幽默）/ "playful"（活跃搞笑）/ "minimal"（少来）/ "varied"（都喜欢）
-5. depth_style: 用户偏好的对话深度 — "shallow"（轻松表层）/ "deep"（深入探讨）/ "adaptable"（看话题）
+可识别的偏好（只能使用以下键名）：
+- response_length: "concise" / "moderate" / "detailed"
+- topic_style: "casual" / "technical" / "emotional" / "philosophical"
+- emotional_tone: "cold_ok" / "warm_preferred" / "teasing_enjoyed" / "mixed"
+- humor_level: "dry" / "playful" / "minimal" / "varied"
+- depth_style: "shallow" / "deep" / "adaptable"
+
+正确格式示例：{"response_length": "concise", "emotional_tone": "warm_preferred"}
+注意：键名是 response_length、topic_style 等，不是 "key"。值就是字符串，不需要嵌套对象。
 
 只返回有证据支持的偏好，没有把握的不要返回。
-只返回JSON对象（不是数组），格式：{"key": "value", "key2": "value2", ...}
 如果没有足够证据，返回 {}。
 只返回JSON，不要其他文字。"""
 
@@ -41,7 +40,8 @@ class PreferenceLearner:
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT preference_key, preference_value, confidence, sample_count "
+                    "SELECT preference_key, preference_value, confidence, sample_count, "
+                    "created_at, updated_at "
                     "FROM user_preferences ORDER BY confidence DESC"
                 )
                 rows = await cur.fetchall()
@@ -105,20 +105,42 @@ class PreferenceLearner:
             if text.startswith("```"):
                 text = text.split("\n", 1)[1] if "\n" in text else text[3:]
                 text = text.rsplit("```", 1)[0] if "```" in text else text
+            # Extract first JSON object if there's surrounding text
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
             preferences = json.loads(text)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             logger.warning(f"Failed to parse preference result: {result[:200]}")
             return {}
 
         if not isinstance(preferences, dict) or not preferences:
             return {}
 
+        # Handle wrong format: {"key": "xxx", "value": "yyy", "confidence": z}
+        if "key" in preferences and "value" in preferences:
+            real_key = preferences["key"]
+            real_value = preferences["value"]
+            conf = preferences.get("confidence", 0.5)
+            if isinstance(real_key, str) and isinstance(real_value, str) and real_key in [
+                "response_length", "topic_style", "emotional_tone",
+                "humor_level", "depth_style",
+            ]:
+                preferences = {real_key: real_value}
+                if isinstance(conf, (int, float)):
+                    # Will be used as default confidence below
+                    preferences["_confidence"] = float(conf)
+            else:
+                return {}
+
         updated = {}
+        default_confidence = preferences.pop("_confidence", 0.5)
         for key, value in preferences.items():
             if not key or not value:
                 continue
 
-            confidence = 0.5  # default for first observation
+            confidence = default_confidence
             if isinstance(value, dict) and "confidence" in value:
                 confidence = float(value["confidence"])
                 value = value.get("value", "")

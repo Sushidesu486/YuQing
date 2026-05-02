@@ -95,6 +95,20 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS yuqing_mood_log (
+    id CHAR(32) PRIMARY KEY,
+    conversation_id CHAR(32) DEFAULT NULL,
+    warmth FLOAT NOT NULL,
+    openness FLOAT NOT NULL,
+    energy FLOAT NOT NULL,
+    mood_label VARCHAR(32) NOT NULL,
+    trigger_type VARCHAR(32) DEFAULT NULL,
+    trigger_summary TEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
+    INDEX idx_mood_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 

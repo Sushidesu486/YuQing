@@ -158,9 +158,10 @@ class MemoryManager:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        "INSERT INTO memories (id, content, category, importance, original_importance) "
-                        "VALUES (%s, %s, %s, %s, %s)",
-                        (mem_id, content, category, importance, importance),
+                        "INSERT INTO memories (id, content, category, importance, "
+                        "original_importance, source_conversation_id) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (mem_id, content, category, importance, importance, conversation_id),
                     )
 
             await vector_db.add_memory(
@@ -390,13 +391,15 @@ class MemoryManager:
                             tuple(source_ids),
                         )
 
-                        # Insert consolidated memory
+                        # Insert consolidated memory (is_consolidated=0: this is the active version)
                         await cur.execute(
                             "INSERT INTO memories (id, content, category, importance, "
-                            "original_importance, is_consolidated, consolidated_from) "
-                            "VALUES (%s, %s, %s, %s, %s, 1, %s)",
+                            "original_importance, is_consolidated, consolidated_from, "
+                            "source_conversation_id) "
+                            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s)",
                             (new_id, content, category, importance, importance,
-                             json.dumps(source_ids, ensure_ascii=False)),
+                             json.dumps(source_ids, ensure_ascii=False),
+                             source_ids[0] if source_ids else None),
                         )
 
                 # Add to ChromaDB

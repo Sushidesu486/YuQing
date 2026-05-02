@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     PROACTIVE_QUIET_HOURS_START: int = 0         # quiet hours start (0 = disabled)
     PROACTIVE_QUIET_HOURS_END: int = 7           # quiet hours end (7am)
 
+    # YuQing mood system
+    YUQING_MOOD_ENABLED: bool = True
+    YUQING_MOOD_EMA_ALPHA: float = 0.15          # new signal weight in EMA
+    YUQING_MOOD_HOURLY_DECAY: float = 0.02       # per-dimension decay per hour of absence
+    YUQING_MOOD_BASELINE_WARMTH: float = 0.30
+    YUQING_MOOD_BASELINE_OPENNESS: float = 0.35
+    YUQING_MOOD_BASELINE_ENERGY: float = 0.45
+
     # Debug
     LOG_LEVEL: str = "INFO"
 

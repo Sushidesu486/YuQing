@@ -10,6 +10,7 @@ import aiomysql
 from app.config import settings
 from app.db.database import get_pool, _generate_id
 from app.core.llm import generate_completion
+from app.core.mood import yuqing_mood_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,9 @@ class ProactiveManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT created_at FROM messages "
-                    "WHERE role = 'user' ORDER BY created_at DESC LIMIT 1"
+                    "WHERE conversation_id = %s AND role = 'user' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (conversation_id,),
                 )
                 row = await cur.fetchone()
 
@@ -125,8 +128,9 @@ class ProactiveManager:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT COUNT(*) as cnt FROM proactive_messages "
-                    "WHERE trigger_type = 'time_of_day' "
-                    "AND DATE(created_at) = CURDATE()"
+                    "WHERE conversation_id = %s AND trigger_type = 'time_of_day' "
+                    "AND DATE(created_at) = CURDATE()",
+                    (conversation_id,),
                 )
                 row = await cur.fetchone()
 
@@ -145,7 +149,7 @@ class ProactiveManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 cutoff = datetime.utcnow() - timedelta(days=settings.MEMORY_DORMANT_DAYS)
                 await cur.execute(
-                    "SELECT id, content, category, importance, created_at "
+                    "SELECT id, content, category, importance, created_at, last_accessed "
                     "FROM memories "
                     "WHERE (last_accessed IS NULL OR last_accessed < %s) "
                     "AND importance > 0.4 "
@@ -194,8 +198,8 @@ class ProactiveManager:
         detail = trigger["trigger_detail"]
 
         reason_map = {
-            "absence": f"用户已经{detail['hours_absent']}小时没有发消息了",
-            "emotion_followup": f"用户{detail['hours_since']}小时前情绪很低落(valence={detail['valence']})",
+            "absence": f"用户已经{detail.get('hours_absent', 0)}小时没有发消息了",
+            "emotion_followup": f"用户{detail.get('hours_since', 0)}小时前情绪很低落(valence={detail.get('valence', 0)})",
             "time_of_day": f"现在是{detail.get('greeting_type', '某个时段')}",
             "memory": "你想起了用户之前提到的一件事",
         }
@@ -224,57 +228,72 @@ class ProactiveManager:
     async def execute_trigger(self, conversation_id: str, trigger: dict):
         """Generate message, store in DB, push to queue."""
         try:
-            content = await asyncio.wait_for(
-                self._generate_message(trigger),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"Proactive message generation timed out for {trigger['trigger_type']}")
-            return
+            # Apply mood effects before generating
+            if trigger["trigger_type"] == "absence":
+                hours = trigger["trigger_detail"].get("hours_absent", 0)
+                try:
+                    await yuqing_mood_tracker.apply_absence_decay(conversation_id, hours)
+                except Exception as e:
+                    logger.debug(f"Absence mood decay failed: {e}")
 
-        if not content or len(content) < 2:
-            logger.warning(f"Empty proactive message for {trigger['trigger_type']}")
-            return
-
-        pool = await get_pool()
-        msg_id = _generate_id()
-
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content, model_used) "
-                    "VALUES (%s, %s, 'assistant', %s, %s)",
-                    (msg_id, conversation_id, content, settings.LITELLM_MODEL),
-                )
-                await cur.execute(
-                    "INSERT INTO proactive_messages (id, conversation_id, trigger_type, message_content, trigger_detail) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (_generate_id(), conversation_id, trigger["trigger_type"],
-                     content, json.dumps(trigger["trigger_detail"], ensure_ascii=True)),
-                )
-
-        logger.info(f"Proactive message sent ({trigger['trigger_type']}): {content[:50]}")
-
-        # Push to SSE queue
-        event_data = json.dumps({
-            "type": "proactive_message",
-            "message_id": msg_id,
-            "conversation_id": conversation_id,
-            "content": content,
-            "trigger_type": trigger["trigger_type"],
-        }, ensure_ascii=True)
-
-        try:
-            _proactive_queue.put_nowait({"event": "proactive", "data": event_data})
-        except asyncio.QueueFull:
             try:
-                _proactive_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
+                content = await asyncio.wait_for(
+                    self._generate_message(trigger),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Proactive message generation timed out for {trigger['trigger_type']}")
+                return
+            except Exception as e:
+                logger.error(f"Proactive message generation failed: {e}")
+                return
+
+            if not content or len(content) < 2:
+                logger.warning(f"Empty proactive message for {trigger['trigger_type']}")
+                return
+
+            pool = await get_pool()
+            msg_id = _generate_id()
+
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO messages (id, conversation_id, role, content, model_used) "
+                        "VALUES (%s, %s, 'assistant', %s, %s)",
+                        (msg_id, conversation_id, content, settings.LITELLM_MODEL),
+                    )
+                    await cur.execute(
+                        "INSERT INTO proactive_messages (id, conversation_id, trigger_type, message_content, trigger_detail) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (_generate_id(), conversation_id, trigger["trigger_type"],
+                         content, json.dumps(trigger["trigger_detail"], ensure_ascii=True)),
+                    )
+
+            logger.info(f"Proactive message sent ({trigger['trigger_type']}): {content[:50]}")
+
+            # Push to SSE queue
+            event_data = json.dumps({
+                "type": "proactive_message",
+                "message_id": msg_id,
+                "conversation_id": conversation_id,
+                "content": content,
+                "trigger_type": trigger["trigger_type"],
+            }, ensure_ascii=True)
+
             try:
                 _proactive_queue.put_nowait({"event": "proactive", "data": event_data})
             except asyncio.QueueFull:
-                pass
+                try:
+                    _proactive_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    _proactive_queue.put_nowait({"event": "proactive", "data": event_data})
+                except asyncio.QueueFull:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Proactive execute_trigger error: {e}")
 
 
 proactive_manager = ProactiveManager()

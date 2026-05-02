@@ -7,6 +7,7 @@ import aiomysql
 from app.core.llm import stream_completion
 from app.core.memory import memory_manager
 from app.core.emotion import mood_regulator
+from app.core.mood import yuqing_mood_tracker
 from app.core.personality import personality_engine
 from app.core.preferences import preference_learner
 from app.config import settings
@@ -41,6 +42,40 @@ class CognitiveProcessor:
         # --- Phase 2: Get current mood ---
         current_mood = await mood_regulator.get_current_mood(conversation_id)
 
+        # --- Phase 2.5: Update YuQing's own mood ---
+        yuqing_mood = None
+        try:
+            from datetime import datetime
+            # Detect return-from-absence
+            pool_for_absence = await get_pool()
+            async with pool_for_absence.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT created_at FROM messages "
+                        "WHERE conversation_id = %s AND role = 'user' "
+                        "ORDER BY created_at DESC LIMIT 1 OFFSET 1",
+                        (conversation_id,),
+                    )
+                    row = await cur.fetchone()
+            if row:
+                hours_since_last = (datetime.utcnow() - row[0]).total_seconds() / 3600
+                if hours_since_last >= settings.PROACTIVE_ABSENCE_THRESHOLD_HOURS:
+                    yuqing_mood = await yuqing_mood_tracker.apply_return_bump(conversation_id)
+
+            # Normal mood update
+            if yuqing_mood is None:
+                yuqing_mood = await yuqing_mood_tracker.update_mood(
+                    conversation_id=conversation_id,
+                    user_emotion=user_emotion,
+                    user_message=user_message,
+                    trigger_type="conversation",
+                )
+        except Exception as e:
+            logger.warning(f"YuQing mood update failed: {e}")
+
+        if yuqing_mood:
+            yield {"event": "mood", "data": json.dumps({"type": "yuqing_mood", **yuqing_mood}, ensure_ascii=True)}
+
         # --- Phase 3: Memory recall ---
         _, recalled_memories = await memory_manager.build_context(
             conversation_id, user_message
@@ -58,6 +93,7 @@ class CognitiveProcessor:
             language=language,
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
             recalled_memories=recalled_memories,
+            yuqing_mood=yuqing_mood,
         )
 
         # --- Phase 5: Store user message (before loading context so it's included) ---
@@ -140,9 +176,10 @@ class CognitiveProcessor:
         except Exception as e:
             logger.debug(f"Memory decay skipped: {e}")
 
-        # Memory consolidation (trigger when count exceeds threshold)
+        # Memory consolidation (trigger when count exceeds threshold, run every 20 exchanges)
         try:
-            await memory_manager.consolidate_memories()
+            if msg_count % 20 == 0:
+                await memory_manager.consolidate_memories()
         except Exception as e:
             logger.debug(f"Memory consolidation skipped: {e}")
 
@@ -173,7 +210,7 @@ class CognitiveProcessor:
             except Exception as e:
                 logger.warning(f"Memory extraction failed: {e}")
 
-        # Learn user preferences (every N exchanges)
+        # Learn user preferences (every N user messages ≈ N*2 total messages)
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -183,7 +220,7 @@ class CognitiveProcessor:
                     )
                     row = await cur.fetchone()
                     msg_count = row[0] if row else 0
-            if msg_count % settings.PREFERENCE_LEARN_INTERVAL == 0:
+            if msg_count % (settings.PREFERENCE_LEARN_INTERVAL * 2) == 0:
                 learned = await preference_learner.learn_from_conversation(
                     conversation_id, user_message, full_response
                 )
