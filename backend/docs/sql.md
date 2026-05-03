@@ -179,21 +179,24 @@ CREATE INDEX idx_memory_type ON memories (memory_type);
 
 ### 2.4 self_memories — 语晴的自我记忆
 
-存储语晴关于自身的认知（兴趣发展、经历积累），在 system prompt 中注入到"你的兴趣"区段，动态替代 YAML 中写死的 interests 列表。
+存储语晴关于自身的认知（兴趣、经历、观点、习惯），在 system prompt 中注入到"你记得的自己"区段，动态替代 YAML 中写死的 interests 列表。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | `id` | CHAR(32) | PK | 自生成 ID |
 | `content` | TEXT | NOT NULL | 自我认知内容（如"我喜欢看老番"） |
-| `memory_type` | VARCHAR(32) | DEFAULT 'self_reflection' | 目前仅有 self_reflection |
-| `importance` | FLOAT | DEFAULT 0.5 | 重要性 |
+| `memory_type` | VARCHAR(32) | DEFAULT 'self_reflection' | 细分类别：self_interest / self_experience / self_opinion / self_habit |
+| `importance` | FLOAT | DEFAULT 0.5 | 重要性（相似记忆强化时会 +0.05） |
 | `source_conversation_id` | CHAR(32) | NULL | 来源对话 |
 | `created_at` | DATETIME | NOT NULL, DEFAULT NOW | 创建时间 |
 | `access_count` | INT | DEFAULT 0 | 被引用次数 |
+| `is_consolidated` | TINYINT | NOT NULL, DEFAULT 0 | 是否已被合并（1=是，合并后的记忆 is_consolidated=0） |
 
-**索引**: `idx_type_importance (memory_type, importance)` — 按类型+重要性排序。
+**索引**: `idx_type_importance (memory_type, importance)`、`idx_consolidated (is_consolidated)`
 
-**提取逻辑**: 扫描 assistant_response，匹配正则模式（`我喜欢/我觉得/我认为/我看过/我最/其实我/我也`），提取内容并去重（前 20 字符 LIKE 匹配）后入库。
+**提取逻辑**: 搭便车用户记忆提取的 LLM 调用，一次 API 调用同时返回 `user_memories` 和 `self_memories`。提取后通过本地 bge embedding 语义去重（cosine > 0.85 跳过，0.6-0.85 强化已有记忆）。
+
+**合并逻辑**: 每 20 轮对话触发。对未合并的记忆做 embedding 聚类（cosine > 0.75 归一组），组内 ≥ 3 条时调用 LLM 合并为精炼总结，原始记忆标记 `is_consolidated=1`。
 
 ```sql
 CREATE TABLE IF NOT EXISTS self_memories (
@@ -204,7 +207,9 @@ CREATE TABLE IF NOT EXISTS self_memories (
     source_conversation_id CHAR(32) DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     access_count INT DEFAULT 0,
-    INDEX idx_type_importance (memory_type, importance)
+    is_consolidated TINYINT NOT NULL DEFAULT 0,
+    INDEX idx_type_importance (memory_type, importance),
+    INDEX idx_consolidated (is_consolidated)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -720,4 +725,14 @@ FROM messages
 WHERE conversation_id = ?
   AND content LIKE ?
 ORDER BY created_at DESC LIMIT ? OFFSET ?;
+
+-- 查看语晴的自我记忆分布
+SELECT memory_type, COUNT(*) AS cnt, AVG(importance) AS avg_imp
+FROM self_memories WHERE is_consolidated = 0
+GROUP BY memory_type;
+
+-- 查看已被合并的自我记忆（原始条目）
+SELECT memory_type, content, importance, created_at
+FROM self_memories WHERE is_consolidated = 1
+ORDER BY created_at DESC LIMIT 20;
 ```

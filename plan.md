@@ -25,7 +25,8 @@
 
 ### 记忆系统（MemoryManager）
 - [x] 多层记忆架构：工作记忆（20 条上下文）+ 长期记忆（MySQL + mem0 + ChromaDB）
-- [x] 7 种记忆类型：fact / event / episodic / emotion / preference / procedural / self_reflection
+- [x] 7 种用户记忆类型：fact / event / episodic / emotion / preference / procedural
+- [x] 4 种自我记忆类型：self_interest / self_experience / self_opinion / self_habit
 - [x] 分层注入机制：显式层（fact+event）→ 情感层（episodic）→ 行为层（preference/procedural）
 - [x] mem0 v2 集成（infer=False 适配不支持 function calling 的模型）
 - [x] 本地中文嵌入模型 BAAI/bge-small-zh-v1.5（512 维，无需额外 API）
@@ -35,7 +36,9 @@
 - [x] 记忆衰减：90 天半衰期，未被访问的记忆重要性逐渐降低
 - [x] 记忆巩固：每 20 轮合并相关记忆，压缩冗余
 - [x] 休眠记忆唤醒：30 天未召回的语义相关记忆被主动消息系统重新激活
-- [x] Self-memory 自动提取：18 种自我表达模式（我喜欢/我觉得/我又/我才/本小姐等），前缀去重 + 精确匹配去重，单次最多 3 条
+- [x] Self-memory LLM 提取：搭便车现有记忆提取 LLM 调用（零额外 API 开销），4 种细分类别（self_interest/self_experience/self_opinion/self_habit）
+- [x] Self-memory embedding 语义去重：本地 bge cosine similarity（>0.85 跳过，0.6-0.85 强化已有 memory）
+- [x] Self-memory 定期合并：embedding 聚类（> 0.75）+ LLM 合并 ≥ 3 条相似自我记忆，is_consolidated 标记
 - [x] mem0 全量同步：启动时同步所有 MySQL 记忆到 mem0（包括 consolidated），完整 metadata（type/valence/confidence），排除 None 值
 
 ### 情感系统（MoodRegulator）

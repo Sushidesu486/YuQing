@@ -91,7 +91,9 @@
 - 最近 20 条对话上下文（可配置）
 - 当前对话的短期记忆，关闭页面后丢失
 
-**长期记忆 — 7 种类型**
+**长期记忆 — 7 种用户记忆 + 4 种自我记忆**
+
+用户记忆：
 
 | 类型 | 说明 | 注入方式 | 示例 |
 |------|------|---------|------|
@@ -101,7 +103,16 @@
 | `emotion` | 情绪记忆（情感模式） | 影响 mood 系统 | "用户被质疑能力时会愤怒" |
 | `preference` | 用户偏好 | 转化为行为规则 | "用户不喜欢被说教" |
 | `procedural` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
-| `self_reflection` | 语晴的自我记忆 | 替代 YAML interests | "和shouss聊了ACG话题" |
+| `self_reflection` | 语晴的自我记忆 | 注入"你记得的自己" | "和shouss聊了ACG话题" |
+
+自我记忆（从语晴的回复中提取）：
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| `self_interest` | 兴趣爱好 | "我喜欢看番"、"我对音乐挺挑剔的" |
+| `self_experience` | 个人经历 | "我以前也学过这个"、"那个我看过了" |
+| `self_opinion` | 观点和态度 | "我觉得这没什么"、"我认为" |
+| `self_habit` | 习惯和倾向 | "我一般不..."、"我习惯..." |
 
 **分层注入机制**
 
@@ -120,9 +131,12 @@
 **记忆提取流程**
 
 ```
-对话内容 → LLM 分类（7种类型 + valence + confidence）
-         → MySQL memories 表（结构化存储，全 CRUD）
-         → mem0.add(infer=False) → ChromaDB（纯向量索引）
+对话内容 → LLM 一次性提取两类记忆（零额外 API 调用）
+         ├─ 用户记忆（7 种类型 + valence + confidence）
+         │    → MySQL memories 表 → mem0.add(infer=False) → ChromaDB
+         └─ 自我记忆（4 种类型 + importance）
+              → embedding 语义去重（bge cosine similarity）
+              → MySQL self_memories 表
 ```
 
 **记忆召回**
@@ -132,8 +146,10 @@
 
 **记忆生命周期**
 - **衰减**：长期不被访问的记忆重要性逐渐降低（90 天减半，每次召回"年轻"5天）
-- **巩固**：每 20 轮对话自动合并相关记忆，压缩冗余
+- **巩固**：每 20 轮对话自动合并相关记忆（用户记忆 + 自我记忆分别合并）
 - **休眠唤醒**：30 天未召回但语义相关的记忆会被主动消息系统重新激活
+- **自我记忆去重**：本地 bge embedding 语义去重（相似度 > 0.85 跳过，0.6-0.85 强化已有记忆）
+- **自我记忆合并**：embedding 聚类（> 0.75 归一组）+ LLM 合并 ≥ 3 条相似自我记忆为精炼总结
 
 ### 2. 情感系统（用户情绪感知）
 
@@ -163,7 +179,7 @@
 - 防御机制：撒娇式调侃、害羞转移话题、故意唱反调（都是可爱的，不是冷漠的）
 - 情绪响应：6 种场景（用户难过/生气/兴奋/焦虑/离开/表达好感）各有对应行为策略
 - 关系动态：从 new_acquaintance → familiar → close → very_close 渐进解锁
-- 兴趣爱好：从 self_memories 动态生成，不写死在 YAML 中
+- 兴趣爱好：从 self_memories 动态生成（LLM 提取 + embedding 去重），YAML interests 作为降级方案
 
 ### 4. 语晴的心情系统
 
@@ -358,7 +374,7 @@ yuqing/
 | `conversations` | 对话列表 |
 | `messages` | 消息记录（含情绪标注） |
 | `memories` | 长期记忆（7种类型 + 情绪metadata + 衰减/巩固标记） |
-| `self_memories` | 语晴的自我记忆（兴趣/经历，动态替代 YAML） |
+| `self_memories` | 语晴的自我记忆（4 种类型 + embedding 去重 + 合并） |
 | `emotion_snapshots` | 用户情绪快照 |
 | `yuqing_mood_log` | 语晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |
