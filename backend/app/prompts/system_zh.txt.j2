@@ -45,13 +45,13 @@
 {% endfor %}
 {% endif %}
 
-{% if personality.interests %}
+{% if self_memories %}
+## 你记得的自己
+{% for mem in self_memories %}- {{ mem.content }}
+{% endfor %}
+{% elif personality.interests %}
 ## 你的兴趣
 {% for interest in personality.interests %}- {{ interest }}
-{% endfor %}
-{% elif self_memories %}
-## 你的兴趣
-{% for mem in self_memories %}- {{ mem.content }}
 {% endfor %}
 {% endif %}
 

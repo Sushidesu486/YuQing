@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS self_memories (
     source_conversation_id CHAR(32) DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     access_count INT DEFAULT 0,
-    INDEX idx_type_importance (memory_type, importance)
+    is_consolidated TINYINT NOT NULL DEFAULT 0,
+    INDEX idx_type_importance (memory_type, importance),
+    INDEX idx_consolidated (is_consolidated)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -210,6 +212,16 @@ async def init_db():
                     "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER sample_count"
                 )
                 logger.info("Migration: added column user_preferences.created_at")
+
+            # Migration: add is_consolidated to self_memories
+            await cur.execute("DESCRIBE self_memories")
+            sm_columns = {row[0] for row in await cur.fetchall()}
+            if "is_consolidated" not in sm_columns:
+                await cur.execute(
+                    "ALTER TABLE self_memories ADD COLUMN "
+                    "is_consolidated TINYINT NOT NULL DEFAULT 0"
+                )
+                logger.info("Migration: added column self_memories.is_consolidated")
 
             # Migration: backfill memory_type from category
             await cur.execute(

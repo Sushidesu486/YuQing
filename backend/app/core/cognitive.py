@@ -186,6 +186,7 @@ class CognitiveProcessor:
         try:
             if msg_count % 20 == 0:
                 await memory_manager.consolidate_memories()
+                await memory_manager.consolidate_self_memories()
         except Exception as e:
             logger.debug(f"Memory consolidation skipped: {e}")
 
