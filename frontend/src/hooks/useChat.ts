@@ -16,6 +16,8 @@ interface SSEData {
 const CONVERSATION_KEY = 'yuqing_conversation_id';
 const COOLDOWN_MS = 10000;
 
+const PLACEHOLDER_ID = '__streaming_placeholder__';
+
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isTyping, setIsTyping] = useState(false);
@@ -65,8 +67,8 @@ export function useChat() {
     sendingRef.current = true;
     pendingRef.current = [];
 
-    // Add assistant placeholder
-    setMessages((prev) => [...prev, { id: '', role: 'assistant', content: '' }]);
+    // Add assistant placeholder (empty content — MessageBubble won't render it)
+    setMessages((prev) => [...prev, { id: PLACEHOLDER_ID, role: 'assistant' as const, content: '' }]);
 
     // Build form data for POST (EventSource only supports GET, so we use fetch + EventSource differently)
     // Actually, EventSource is GET-only. We need to use fetch for POST, but parse SSE manually.
@@ -116,11 +118,19 @@ export function useChat() {
               setError(data.error || 'Unknown error');
             } else if (data.type === 'done') {
               console.log('[Chat] done event received, content length:', fullContent.length);
+              const trimmed = fullContent.trim();
+              const isEmpty = !trimmed || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。'].includes(trimmed);
               setMessages((prev) => {
+                const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
+                if (idx === -1) return prev; // placeholder already removed
+                if (isEmpty) {
+                  // Remove placeholder — don't show empty/useless responses
+                  return prev.filter((_, i) => i !== idx);
+                }
                 const updated = [...prev];
-                updated[updated.length - 1] = {
-                  ...updated[updated.length - 1],
-                  id: data.message_id || updated[updated.length - 1].id,
+                updated[idx] = {
+                  ...updated[idx],
+                  id: data.message_id || updated[idx].id,
                   content: fullContent,
                   created_at: new Date().toISOString(),
                 };
@@ -139,16 +149,18 @@ export function useChat() {
 
       // If done event was never received but we have content, update anyway
       if (fullContent) {
+        const trimmed = fullContent.trim();
+        const isEmpty = !trimmed || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。'].includes(trimmed);
         setMessages((prev) => {
+          const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
+          if (idx === -1) return prev;
+          if (isEmpty) return prev.filter((_, i) => i !== idx);
           const updated = [...prev];
-          const last = updated[updated.length - 1];
-          if (last && last.role === 'assistant' && !last.content) {
-            updated[updated.length - 1] = {
-              ...last,
-              content: fullContent,
-              created_at: new Date().toISOString(),
-            };
-          }
+          updated[idx] = {
+            ...updated[idx],
+            content: fullContent,
+            created_at: new Date().toISOString(),
+          };
           return updated;
         });
       }
@@ -156,7 +168,7 @@ export function useChat() {
       console.error('[Chat] flush error:', err);
       setError(err instanceof Error ? err.message : 'Unknown error');
       // Remove the empty assistant placeholder on error
-      setMessages((prev) => prev.slice(0, -1));
+      setMessages((prev) => prev.filter(m => m.id !== PLACEHOLDER_ID));
     }).finally(() => {
       sendingRef.current = false;
       setIsTyping(false);

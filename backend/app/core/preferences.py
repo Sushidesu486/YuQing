@@ -24,11 +24,11 @@ PREFERENCE_LEARN_PROMPT_ZH = """分析以下对话，推断用户的沟通偏好
 - humor_level: "dry" / "playful" / "minimal" / "varied"
 - depth_style: "shallow" / "deep" / "adaptable"
 
-正确格式示例：{"response_length": "concise", "emotional_tone": "warm_preferred"}
+正确格式示例：{{"response_length": "concise", "emotional_tone": "warm_preferred"}}
 注意：键名是 response_length、topic_style 等，不是 "key"。值就是字符串，不需要嵌套对象。
 
 只返回有证据支持的偏好，没有把握的不要返回。
-如果没有足够证据，返回 {}。
+如果没有足够证据，返回空对象 {{}}。
 只返回JSON，不要其他文字。"""
 
 

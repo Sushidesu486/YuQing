@@ -1,6 +1,8 @@
 import json
 import logging
 import math
+import os
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -15,19 +17,25 @@ logger = logging.getLogger(__name__)
 
 # ── mem0 fallback prompts (used only when MEM0_ENABLED=False) ──
 
-MEMORY_EXTRACT_PROMPT_ZH = """分析以下对话，提取关于用户的重要信息。只提取值得长期记住的内容，包括：
-- 用户的事实信息（姓名、喜好、职业等）
-- 用户表达的偏好和爱好
-- 重要的情感事件或生活事件
-- 用户的价值观和信念
+MEMORY_CLASSIFY_PROMPT_ZH = """分析以下对话，提取关于用户的重要信息并分类。对每条信息判断属于哪种类型：
+
+类型说明：
+- fact: 用户的事实信息（姓名、身份、职业、位置等）
+- preference: 用户明确表达的喜好、厌恶、习惯偏好
+- event: 发生的具体事件（有时间节点）
+- episodic: 带有强烈情绪色彩的经历或场景
+- emotion: 持续的情感反应模式（反复出现的情绪触发）
+- procedural: 行为互动模式（用户习惯的聊天方式、时间习惯等）
 
 对话内容：
 {conversation}
 
 请以JSON数组格式返回提取的记忆，每个记忆包含：
 - "content": 记忆内容（简洁描述）
-- "category": 类别（fact/preference/event/emotion_pattern）
+- "memory_type": 类型（fact/preference/event/episodic/emotion/procedural）
 - "importance": 重要性（0.0-1.0）
+- "valence": 情感极性（-1.0到1.0，积极为正，消极为负，中性为0）
+- "confidence": 提取置信度（0.0-1.0，你有多大把握这是准确的）
 
 如果没有值得记忆的内容，返回空数组 []。
 只返回JSON，不要其他文字。"""
@@ -66,6 +74,32 @@ CONSOLIDATE_PROMPT_ZH = """以下是关于同一个用户的若干条记忆，�
 
 只返回JSON，不要其他文字。"""
 
+# ── Behavior rule patterns (preference/procedural → behavior rules) ──
+
+_BEHAVIOR_RULE_PATTERNS = [
+    (r"不喜欢?[\s\S]*?(?:说教|教导|指导|指挥)", "避免说教语气，用平等的讨论方式"),
+    (r"不喜欢?[\s\S]*?(?:太甜|太腻|亲昵|肉麻)", "不要过于甜腻或亲昵，保持正常的调侃距离"),
+    (r"不喜欢?[\s\S]*?(?:啰嗦|冗长|废话)", "回复要简洁，不要铺垫太多"),
+    (r"喜欢?[\s\S]*?(?:详细|深入|展开|多说)", "遇到用户感兴趣的话题可以多展开"),
+    (r"偏好?[\s\S]*?(?:轻松|随便|日常)", "保持轻松的闲聊氛围，不要太严肃"),
+    (r"习惯?[\s\S]*?(?:晚上|深夜|睡前)", "晚上/深夜的对话可以更放松一些"),
+    (r"总是?[\s\S]*?(?:简短|一两句|短)", "用户偏好简短的交流，回复不要过长"),
+    (r"经常?[\s\S]*?(?:主动|自己|先说)", "用户习惯主动发起话题，不需要你一直找话题"),
+    (r"不喜欢?[\s\S]*?(?:被忽视|不被在意|不关心)", "要表现出你在关注用户说的话"),
+]
+
+# ── Self-expression keywords for self-memory extraction ──
+
+_SELF_EXPRESSION_PATTERNS = [
+    r"我喜欢[^\n。]*",
+    r"我觉得[^\n。]*",
+    r"我认为[^\n。]*",
+    r"我看[过|过|完][^\n。]*",
+    r"我最[^\n。]*",
+    r"其实我[^\n。]*",
+    r"我也[^\n。]*",
+]
+
 # ── mem0 singleton ──
 
 _mem0_client: Optional[Memory] = None
@@ -99,7 +133,8 @@ def _get_mem0() -> Memory:
             },
         }
         if settings.LITELLM_API_BASE:
-            config["llm"]["config"]["api_base"] = settings.LITELLM_API_BASE
+            os.environ["LITELLM_API_BASE"] = settings.LITELLM_API_BASE
+            os.environ["OPENAI_API_BASE"] = settings.LITELLM_API_BASE
 
         _mem0_client = Memory.from_config(config)
         logger.info("mem0 Memory client initialized")
@@ -111,6 +146,66 @@ def init_mem0():
     _get_mem0()
 
 
+async def sync_memories_to_mem0():
+    """Sync existing MySQL memories to mem0 vector store.
+    Called once at startup to migrate pre-mem0 memories."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                "SELECT id, content, category, importance FROM memories "
+                "WHERE is_consolidated = 0 ORDER BY importance DESC"
+            )
+            rows = await cur.fetchall()
+
+    if not rows:
+        return
+
+    mem0 = _get_mem0()
+    # Check what mem0 already has
+    existing = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
+    existing_ids = set()
+    if existing and "results" in existing:
+        existing_ids = {m.get("id") for m in existing["results"]}
+
+    synced = 0
+    for row in rows:
+        if row["id"] in existing_ids:
+            continue
+        try:
+            mem0.add(
+                row["content"],
+                user_id=_MEM0_USER_ID,
+                metadata={"category": row["category"], "importance": row["importance"]},
+                infer=False,
+            )
+            synced += 1
+        except Exception as e:
+            logger.warning(f"Failed to sync memory {row['id']}: {e}")
+
+    if synced:
+        logger.info(f"Synced {synced} existing memories to mem0 vector store")
+
+
+def _time_ago(dt: datetime) -> str:
+    """Format datetime as relative time string."""
+    now = datetime.utcnow()
+    diff = now - dt
+    days = diff.total_seconds() / 86400
+    if days < 1:
+        return "今天"
+    elif days < 2:
+        return "昨天"
+    elif days < 7:
+        return f"{int(days)}天前"
+    elif days < 30:
+        return f"{int(days / 7)}周前"
+    elif days < 365:
+        return f"{int(days / 30)}个月前"
+    else:
+        return f"{int(days / 365)}年前"
+
+
 class MemoryManager:
 
     # ── Context building ──
@@ -119,8 +214,17 @@ class MemoryManager:
         self,
         conversation_id: str,
         user_message: str,
-    ) -> list:
-        """Build message context: recent messages + relevant long-term memories."""
+    ) -> tuple:
+        """Build message context: recent messages + layered long-term memories.
+
+        Returns:
+            (messages_context, layered_memory) where layered_memory is a dict with keys:
+            - facts: list of {id, content, memory_type, created_at_relative}
+            - events: list of {id, content, created_at_relative}
+            - episodic: list of {content, valence}
+            - behavior_rules: list of str
+            - emotion_influences: list of {trigger, expected_valence}
+        """
         pool = await get_pool()
         messages_context = []
 
@@ -137,10 +241,8 @@ class MemoryManager:
         for row in reversed(rows):
             messages_context.append({"role": row["role"], "content": row["content"]})
 
-        # 2. Search memories via mem0 or MySQL fallback
-        recalled = await self.search_memories(
-            user_message, top_k=settings.MEMORY_RECALL_COUNT
-        )
+        # 2. Search memories via mem0 or MySQL fallback (expanded to top_k=10)
+        recalled = await self.search_memories(user_message, top_k=10)
 
         # 3. Dormant memory reactivation
         dormant = await self.get_dormant_memories(user_message)
@@ -148,7 +250,141 @@ class MemoryManager:
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
-        return messages_context, recalled
+        # 4. Build layered memory structure
+        layered_memory = await self._build_layered_memory(recalled)
+
+        return messages_context, layered_memory
+
+    async def _build_layered_memory(self, recalled: list) -> dict:
+        """Transform recalled memories into a layered structure.
+
+        Args:
+            recalled: list of memory dicts with keys like id, content, metadata, distance, etc.
+
+        Returns:
+            dict with keys: facts, events, episodic, behavior_rules, emotion_influences
+        """
+        pool = await get_pool()
+        layered = {
+            "facts": [],
+            "events": [],
+            "episodic": [],
+            "behavior_rules": [],
+            "emotion_influences": [],
+        }
+
+        # Separate pinned facts (importance >= 0.8, memory_type=fact) and gather created_at
+        pinned_facts = []
+        remaining = []
+
+        for mem in recalled:
+            metadata = mem.get("metadata", {})
+            memory_type = metadata.get("memory_type") or metadata.get("category", "fact")
+            importance = float(metadata.get("importance", 0.5))
+            mem["memory_type"] = memory_type
+            mem["importance"] = importance
+
+            if memory_type == "fact" and importance >= 0.8 and len(pinned_facts) < 2:
+                pinned_facts.append(mem)
+            else:
+                remaining.append(mem)
+
+        # Fetch created_at for all recalled memories in bulk
+        all_mem_ids = [m["id"] for m in recalled if m.get("id")]
+        created_at_map = {}
+        if all_mem_ids:
+            placeholders = ",".join(["%s"] * len(all_mem_ids))
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        f"SELECT id, created_at FROM memories WHERE id IN ({placeholders})",
+                        tuple(all_mem_ids),
+                    )
+                    rows = await cur.fetchall()
+                    for r in rows:
+                        created_at_map[r["id"]] = r["created_at"]
+
+        def _relative_time(mem_id: str) -> str:
+            dt = created_at_map.get(mem_id)
+            if dt:
+                if isinstance(dt, datetime):
+                    return _time_ago(dt)
+                return _time_ago(datetime.fromisoformat(str(dt)))
+            return ""
+
+        # Process pinned facts first
+        for mem in pinned_facts:
+            layered["facts"].append({
+                "id": mem["id"],
+                "content": mem["content"],
+                "memory_type": mem["memory_type"],
+                "created_at_relative": _relative_time(mem["id"]),
+            })
+
+        # Process remaining memories by type
+        for mem in remaining:
+            mt = mem.get("memory_type", "fact")
+            content = mem.get("content", "")
+            metadata = mem.get("metadata", {})
+
+            if mt == "fact":
+                if len(layered["facts"]) < 5:  # total facts limit
+                    layered["facts"].append({
+                        "id": mem["id"],
+                        "content": content,
+                        "memory_type": mt,
+                        "created_at_relative": _relative_time(mem["id"]),
+                    })
+
+            elif mt == "event":
+                layered["events"].append({
+                    "id": mem["id"],
+                    "content": content,
+                    "created_at_relative": _relative_time(mem["id"]),
+                })
+
+            elif mt == "episodic":
+                valence = float(metadata.get("valence", 0))
+                layered["episodic"].append({
+                    "content": content,
+                    "valence": valence,
+                })
+
+            elif mt == "emotion":
+                # Extract trigger patterns for emotion influences
+                trigger = content
+                expected_valence = float(metadata.get("valence", 0))
+                layered["emotion_influences"].append({
+                    "trigger": trigger,
+                    "expected_valence": expected_valence,
+                })
+
+            elif mt in ("preference", "procedural"):
+                # Try to convert to behavior rules using regex patterns
+                rule = self._content_to_behavior_rule(content)
+                if rule:
+                    layered["behavior_rules"].append(rule)
+                else:
+                    # No pattern matched, keep as fact
+                    if len(layered["facts"]) < 5:
+                        layered["facts"].append({
+                            "id": mem["id"],
+                            "content": content,
+                            "memory_type": mt,
+                            "created_at_relative": _relative_time(mem["id"]),
+                        })
+
+        return layered
+
+    def _content_to_behavior_rule(self, content: str) -> Optional[str]:
+        """Try to convert a preference/procedural memory content to a behavior rule.
+
+        Returns the behavior rule string if a pattern matches, None otherwise.
+        """
+        for pattern, rule in _BEHAVIOR_RULE_PATTERNS:
+            if re.search(pattern, content):
+                return rule
+        return None
 
     # ── Memory storage ──
 
@@ -160,74 +396,63 @@ class MemoryManager:
         language: str = "zh",
     ) -> list:
         """Extract memorable facts and store them."""
+        stored = []
         if settings.MEM0_ENABLED:
-            return await self._extract_via_mem0(
-                conversation_id, user_message, assistant_response
+            stored = await self._extract_via_mem0(
+                conversation_id, user_message, assistant_response, language
             )
-        return await self._extract_via_llm(
-            conversation_id, user_message, assistant_response, language
-        )
+        else:
+            stored = await self._extract_via_llm(
+                conversation_id, user_message, assistant_response, language
+            )
+
+        # Extract self-memories from assistant response
+        await self._extract_self_memory(conversation_id, assistant_response)
+
+        return stored
 
     async def _extract_via_mem0(
         self,
         conversation_id: str,
         user_message: str,
         assistant_response: str,
+        language: str = "zh",
     ) -> list:
-        """Use mem0.add() to extract and store memories automatically."""
-        conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
+        """Extract memories using LLM classification, store in mem0 (infer=False) + MySQL.
 
-        try:
-            mem0 = _get_mem0()
-            result = mem0.add(
-                conversation_text,
-                user_id=_MEM0_USER_ID,
-                metadata={"source_conversation_id": conversation_id},
-            )
-        except Exception as e:
-            logger.error(f"mem0.add() failed: {e}")
+        mem0.add(infer=False) stores the raw text for vector search without using
+        function calling. Structured metadata (memory_type, valence, etc.) comes from
+        our own LLM classification via _extract_via_llm().
+        """
+        # Step 1: Use LLM to classify and extract structured memories
+        classified = await self._extract_via_llm(
+            conversation_id, user_message, assistant_response, language
+        )
+        if not classified:
             return []
 
-        stored = []
-        if result and "results" in result:
-            for mem in result["results"]:
-                mem_id = mem.get("id")
-                content = mem.get("memory", "").strip()
-                if not content:
-                    continue
+        # Step 2: Store each classified memory in mem0 (vector store only, no infer)
+        conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
+        mem0 = _get_mem0()
 
-                # Infer category from mem0 metadata or default
-                metadata = mem.get("metadata", {})
-                category = metadata.get("category", "general")
+        for mem in classified:
+            try:
+                mem0.add(
+                    mem["content"],
+                    user_id=_MEM0_USER_ID,
+                    metadata={
+                        "source_conversation_id": conversation_id,
+                        "memory_type": mem["memory_type"],
+                        "valence": mem.get("valence", 0.0),
+                        "importance": mem.get("importance", 0.5),
+                        "confidence": mem.get("confidence", 0.5),
+                    },
+                    infer=False,
+                )
+            except Exception as e:
+                logger.warning(f"mem0.add(infer=False) failed for memory: {e}")
 
-                # Write to MySQL for CRUD compatibility
-                try:
-                    pool = await get_pool()
-                    async with pool.acquire() as conn:
-                        async with conn.cursor() as cur:
-                            # Avoid duplicates
-                            await cur.execute(
-                                "SELECT id FROM memories WHERE id = %s", (mem_id,)
-                            )
-                            if await cur.fetchone():
-                                stored.append({"id": mem_id, "content": content, "category": category})
-                                continue
-
-                            await cur.execute(
-                                "INSERT INTO memories (id, content, category, importance, "
-                                "original_importance, source_conversation_id) "
-                                "VALUES (%s, %s, %s, %s, %s, %s)",
-                                (mem_id, content, category, 0.5, 0.5, conversation_id),
-                            )
-                    stored.append({"id": mem_id, "content": content, "category": category})
-                except Exception as e:
-                    logger.warning(f"Failed to sync mem0 memory to MySQL: {e}")
-
-        if stored:
-            logger.info(
-                f"mem0: extracted {len(stored)} memories from conversation {conversation_id[:8]}"
-            )
-        return stored
+        return classified
 
     async def _extract_via_llm(
         self,
@@ -241,7 +466,7 @@ class MemoryManager:
 
         conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
         prompt_template = (
-            MEMORY_EXTRACT_PROMPT_ZH if language == "zh" else MEMORY_EXTRACT_PROMPT_EN
+            MEMORY_CLASSIFY_PROMPT_ZH if language == "zh" else MEMORY_EXTRACT_PROMPT_EN
         )
         # Safe substitution: only replace the known placeholder
         prompt = prompt_template.replace("{conversation}", conversation_text)
@@ -272,8 +497,14 @@ class MemoryManager:
         pool = await get_pool()
         for mem in memories[:5]:
             content = mem.get("content", "").strip()
-            category = mem.get("category", "general")
+            # Support both new memory_type and legacy category fields
+            memory_type = mem.get("memory_type") or mem.get("category", "general")
+            # Map legacy category names to new memory_type names
+            _legacy_map = {"emotion_pattern": "emotion", "general": "fact"}
+            memory_type = _legacy_map.get(memory_type, memory_type)
             importance = float(mem.get("importance", 0.5))
+            valence = float(mem.get("valence", 0.0))
+            confidence = float(mem.get("confidence", 0.5))
             if not content:
                 continue
 
@@ -282,15 +513,61 @@ class MemoryManager:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "INSERT INTO memories (id, content, category, importance, "
-                        "original_importance, source_conversation_id) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)",
-                        (mem_id, content, category, importance, importance, conversation_id),
+                        "original_importance, source_conversation_id, "
+                        "memory_type, valence, arousal, emotion_label, confidence) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (mem_id, content, memory_type, importance, importance,
+                         conversation_id, memory_type, valence, 0.0, "", confidence),
                     )
-            stored.append({"id": mem_id, "content": content, "category": category})
+            stored.append({
+                "id": mem_id, "content": content,
+                "category": memory_type, "memory_type": memory_type,
+                "valence": valence, "confidence": confidence,
+            })
 
         if stored:
             logger.info(f"Extracted {len(stored)} memories from conversation {conversation_id[:8]}")
         return stored
+
+    async def _extract_self_memory(
+        self,
+        conversation_id: str,
+        assistant_response: str,
+    ):
+        """Check if assistant_response contains self-expression and store in self_memories.
+
+        Uses simple keyword-based approach: if the assistant talks about
+        "我喜欢/我觉得/我认为/我看过" etc., store as self_reflection.
+        """
+        for pattern in _SELF_EXPRESSION_PATTERNS:
+            match = re.search(pattern, assistant_response)
+            if match:
+                content = match.group(0).strip().rstrip("。，！？,")
+                if len(content) < 3:
+                    continue
+
+                try:
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            # Avoid near-duplicates
+                            await cur.execute(
+                                "SELECT id FROM self_memories WHERE content LIKE %s LIMIT 1",
+                                (f"%{content[:20]}%",),
+                            )
+                            if await cur.fetchone():
+                                continue
+
+                            mem_id = _generate_id()
+                            await cur.execute(
+                                "INSERT INTO self_memories (id, content, memory_type, "
+                                "importance, source_conversation_id) "
+                                "VALUES (%s, %s, %s, %s, %s)",
+                                (mem_id, content, "self_reflection", 0.5, conversation_id),
+                            )
+                    logger.debug(f"Stored self-memory: {content[:50]}")
+                except Exception as e:
+                    logger.warning(f"Failed to store self-memory: {e}")
 
     # ── Memory search ──
 
@@ -301,10 +578,10 @@ class MemoryManager:
         return await self._search_via_mysql(query, top_k)
 
     async def _search_via_mem0(self, query: str, top_k: int) -> list:
-        """Search via mem0.search() — returns hybrid (semantic + entity) results."""
+        """Search via mem0.search() -- returns hybrid (semantic + entity) results."""
         try:
             mem0 = _get_mem0()
-            results = mem0.search(query, user_id=_MEM0_USER_ID, limit=top_k)
+            results = mem0.search(query, filters={"user_id": _MEM0_USER_ID}, top_k=top_k)
         except Exception as e:
             logger.warning(f"mem0.search() failed: {e}")
             return []
@@ -312,11 +589,17 @@ class MemoryManager:
         memories = []
         if results and "results" in results:
             for r in results["results"]:
+                metadata = r.get("metadata", {})
                 memories.append({
                     "id": r.get("id", ""),
                     "content": r.get("memory", ""),
-                    "distance": 1.0 - r.get("score", 0.0),  # score → distance
-                    "metadata": r.get("metadata", {}),
+                    "distance": 1.0 - r.get("score", 0.0),
+                    "metadata": {
+                        "category": metadata.get("category", "fact"),
+                        "importance": metadata.get("importance", 0.5),
+                        "memory_type": metadata.get("memory_type") or metadata.get("category", "fact"),
+                        "valence": metadata.get("valence", 0.0),
+                    },
                 })
         return memories
 
@@ -326,7 +609,9 @@ class MemoryManager:
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT id, content, category, importance FROM memories "
+                    "SELECT id, content, category, importance, "
+                    "memory_type, valence, confidence "
+                    "FROM memories "
                     "WHERE is_consolidated = 0 AND importance > 0.2 "
                     "ORDER BY importance DESC LIMIT %s",
                     (top_k,),
@@ -334,9 +619,29 @@ class MemoryManager:
                 rows = await cur.fetchall()
         return [
             {"id": r["id"], "content": r["content"], "distance": 0.0,
-             "metadata": {"category": r["category"], "importance": r["importance"]}}
+             "metadata": {
+                 "category": r["category"],
+                 "importance": r["importance"],
+                 "memory_type": r.get("memory_type") or r["category"],
+                 "valence": float(r["valence"]) if r.get("valence") is not None else None,
+                 "confidence": float(r["confidence"]) if r.get("confidence") is not None else 0.5,
+             }}
             for r in rows
         ]
+
+    # ── Self-memories ──
+
+    async def get_self_memories(self, limit: int = 10) -> list:
+        """Retrieve self-memories (语晴's own reflections/preferences)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, memory_type, importance, access_count "
+                    "FROM self_memories ORDER BY importance DESC LIMIT %s",
+                    (limit,),
+                )
+                return await cur.fetchall()
 
     # ── Memory decay ──
 
@@ -424,16 +729,17 @@ class MemoryManager:
         if settings.MEM0_ENABLED:
             try:
                 mem0 = _get_mem0()
-                all_memories = mem0.get_all(user_id=_MEM0_USER_ID)
+                all_memories = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
                 mem_map = {}
                 if all_memories and "results" in all_memories:
                     for m in all_memories["results"]:
                         mem_map[m.get("id")] = m
 
+                now = datetime.utcnow()
                 results = []
-                dormant_ids = {r["id"]: r for r in dormant_rows}
                 for r in dormant_rows:
                     if r["id"] in mem_map:
+                        metadata = r.get("metadata", {})
                         results.append({
                             "id": r["id"],
                             "content": r["content"],
@@ -486,16 +792,16 @@ class MemoryManager:
         from app.core.llm import generate_completion
 
         consolidated_count = 0
-        categories = ["fact", "preference", "event", "emotion_pattern"]
+        memory_types = ["fact", "preference", "event", "episodic", "emotion", "procedural"]
 
-        for category in categories:
+        for memory_type in memory_types:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
                     await cur.execute(
                         "SELECT id, content, importance FROM memories "
-                        "WHERE category = %s AND is_consolidated = 0 "
+                        "WHERE memory_type = %s AND is_consolidated = 0 "
                         "ORDER BY importance DESC LIMIT 15",
-                        (category,),
+                        (memory_type,),
                     )
                     rows = await cur.fetchall()
 
@@ -515,7 +821,7 @@ class MemoryManager:
                     temperature=0.1,
                 )
             except Exception as e:
-                logger.warning(f"Consolidation LLM call failed for {category}: {e}")
+                logger.warning(f"Consolidation LLM call failed for {memory_type}: {e}")
                 continue
 
             try:
@@ -525,7 +831,7 @@ class MemoryManager:
                     text = text.rsplit("```", 1)[0] if "```" in text else text
                 merged = json.loads(text)
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse consolidation result for {category}")
+                logger.warning(f"Failed to parse consolidation result for {memory_type}")
                 continue
 
             if not isinstance(merged, list) or not merged:
@@ -550,11 +856,12 @@ class MemoryManager:
                         await cur.execute(
                             "INSERT INTO memories (id, content, category, importance, "
                             "original_importance, is_consolidated, consolidated_from, "
-                            "source_conversation_id) "
-                            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s)",
-                            (new_id, content, category, importance, importance,
+                            "source_conversation_id, memory_type) "
+                            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s)",
+                            (new_id, content, memory_type, importance, importance,
                              json.dumps(source_ids, ensure_ascii=False),
-                             source_ids[0] if source_ids else None),
+                             source_ids[0] if source_ids else None,
+                             memory_type),
                         )
 
                 # Sync with mem0: add new, delete old
@@ -564,7 +871,12 @@ class MemoryManager:
                         mem0.add(
                             content,
                             user_id=_MEM0_USER_ID,
-                            metadata={"category": category, "importance": importance},
+                            metadata={
+                                "category": memory_type,
+                                "memory_type": memory_type,
+                                "importance": importance,
+                            },
+                            infer=False,
                         )
                         for old_id in source_ids:
                             mem0.delete(old_id)

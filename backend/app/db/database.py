@@ -109,6 +109,17 @@ CREATE TABLE IF NOT EXISTS yuqing_mood_log (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
     INDEX idx_mood_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS self_memories (
+    id CHAR(32) PRIMARY KEY,
+    content TEXT NOT NULL,
+    memory_type VARCHAR(32) DEFAULT 'self_reflection',
+    importance FLOAT DEFAULT 0.5,
+    source_conversation_id CHAR(32) DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    access_count INT DEFAULT 0,
+    INDEX idx_type_importance (memory_type, importance)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -162,6 +173,11 @@ async def init_db():
                 ("original_importance FLOAT DEFAULT 0.5", "original_importance"),
                 ("is_consolidated TINYINT NOT NULL DEFAULT 0", "is_consolidated"),
                 ("consolidated_from VARCHAR(255) DEFAULT NULL", "consolidated_from"),
+                ("memory_type VARCHAR(32) DEFAULT 'fact'", "memory_type"),
+                ("valence FLOAT DEFAULT NULL", "valence"),
+                ("arousal FLOAT DEFAULT NULL", "arousal"),
+                ("emotion_label VARCHAR(32) DEFAULT NULL", "emotion_label"),
+                ("confidence FLOAT DEFAULT 0.5", "confidence"),
             ]
 
             for col_def, col_name in migrations:
@@ -194,6 +210,28 @@ async def init_db():
                     "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER sample_count"
                 )
                 logger.info("Migration: added column user_preferences.created_at")
+
+            # Migration: backfill memory_type from category
+            await cur.execute(
+                "UPDATE memories SET memory_type = CASE category "
+                "  WHEN 'fact' THEN 'fact' "
+                "  WHEN 'preference' THEN 'preference' "
+                "  WHEN 'event' THEN 'event' "
+                "  WHEN 'emotion_pattern' THEN 'emotion' "
+                "  ELSE 'fact' "
+                "END WHERE memory_type IS NULL OR memory_type = ''"
+            )
+            row = await cur.fetchone()
+            logger.info("Migration: backfilled memory_type from category")
+
+            # Add index for memory_type
+            for idx_sql in [
+                "CREATE INDEX idx_memory_type ON memories (memory_type)",
+            ]:
+                try:
+                    await cur.execute(idx_sql)
+                except Exception:
+                    pass
 
     logger.info("Database tables initialized")
 

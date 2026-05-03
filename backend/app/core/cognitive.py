@@ -76,13 +76,17 @@ class CognitiveProcessor:
         if yuqing_mood:
             yield {"event": "mood", "data": json.dumps({"type": "yuqing_mood", **yuqing_mood}, ensure_ascii=True)}
 
-        # --- Phase 3: Memory recall ---
-        _, recalled_memories = await memory_manager.build_context(
+        # --- Phase 3: Memory recall (layered) ---
+        _, layered_memory = await memory_manager.build_context(
             conversation_id, user_message
         )
 
-        # Touch recalled memories (update access time)
-        for mem in recalled_memories:
+        # Touch all recalled memories (update access time)
+        all_recalled = (
+            layered_memory.get("facts", []) +
+            layered_memory.get("events", [])
+        )
+        for mem in all_recalled:
             try:
                 await memory_manager.touch_memory(mem["id"])
             except Exception as e:
@@ -92,7 +96,7 @@ class CognitiveProcessor:
         system_prompt = await personality_engine.build_system_prompt(
             language=language,
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
-            recalled_memories=recalled_memories,
+            recalled_memories=layered_memory,
             yuqing_mood=yuqing_mood,
         )
 

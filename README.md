@@ -38,11 +38,11 @@
 │                                                              │
 │  Phase 1:  用户情绪分析 (V-A 模型)                             │
 │  Phase 2:  用户当前情绪状态                                    │
-│  Phase 2.5: 语晴自身心情更新 ← NEW                            │
-│  Phase 3:  记忆召回 (mem0 混合检索)                           │
-│  Phase 4:  人格 prompt 构建 (Jinja2)                          │
+│  Phase 2.5: 语晴自身心情更新                                   │
+│  Phase 3:  分层记忆召回 (mem0 + MySQL)                        │
+│  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成               │
-│  Phase 9:  记忆提取(mem0) / 偏好学习 / 记忆衰减 / 记忆巩固      │
+│  Phase 9:  记忆分类提取 / 记忆衰减 / 巩固 / 自我记忆 / 偏好学习 │
 │                                                              │
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
 │  │Personality │ │  Memory  │ │ Emotion  │ │  YuQing Mood  │   │
@@ -64,8 +64,8 @@
 |------|------|------|
 | Web 框架 | **FastAPI** (Python, async) | 异步，高性能 |
 | 数据库 | **MySQL 9** | 结构化数据持久化 |
-| 记忆引擎 | **mem0 v2** + ChromaDB | 自动提取 + 混合检索 + 中文嵌入 |
-| 嵌入模型 | **BAAI/bge-small-zh-v1.5** | 本地中文向量嵌入（无需额外 API） |
+| 记忆引擎 | **mem0 v2** + ChromaDB | 向量存储 + 语义检索 + 中文嵌入 |
+| 嵌入模型 | **BAAI/bge-small-zh-v1.5** | 本地中文向量嵌入（512维，无需额外 API） |
 | LLM 接口 | **litellm** | 一套代码切换多家 API |
 | 模板引擎 | **Jinja2** | 动态生成 system prompt |
 
@@ -84,24 +84,53 @@
 
 ### 1. 记忆系统
 
-语晴的记忆不是简单的"保存聊天记录"。她有一个类人脑的多层记忆架构：
+语晴的记忆不是简单的"保存聊天记录"。她有一个多层分层的记忆架构：
 
 **工作记忆（Working Memory）**
 - 最近 20 条对话上下文（可配置）
 - 当前对话的短期记忆，关闭页面后丢失
 
-**长期记忆（Long-term Memory）**
-- 每次对话后，mem0 自动分析并提取值得记住的信息（内置去重）
-- 存入 MySQL（结构化元数据）+ mem0/ChromaDB（向量化 + 语义检索）
-- 4 个类别：`fact`（事实）、`preference`（偏好）、`event`（事件）、`emotion_pattern`（情感模式）
-- 每条记忆带重要性评分（0~1），影响检索优先级
+**长期记忆 — 7 种类型**
+
+| 类型 | 说明 | 注入方式 | 示例 |
+|------|------|---------|------|
+| `fact` | 用户事实信息 | 显式原文 | "用户叫shouss" |
+| `event` | 重要的生活事件 | 显式原文（带时间） | "用户拿到ASC比赛名额" |
+| `episodic` | 带情绪色彩的情景记忆 | 情感层注入 | "聊到学历偏见时用户很激动" |
+| `emotion` | 情绪记忆（情感模式） | 影响 mood 系统 | "用户被质疑能力时会愤怒" |
+| `preference` | 用户偏好 | 转化为行为规则 | "用户不喜欢被说教" |
+| `proference` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
+| `self_reflection` | 语晴的自我记忆 | 替代 YAML interests | "和shouss聊了ACG话题" |
+
+**分层注入机制**
+
+记忆不是简单丢进 prompt，而是按类型分三层注入：
+
+```
+显式层 → "你记得的关于用户的事"    ← fact + event 原文（带时间标注）
+情感层 → "最近想起的画面"          ← episodic 情景记忆（带情绪极性）
+行为层 → "你自然形成的态度"        ← preference/procedural 转化为行为指令
+```
+
+- 高重要性事实（importance >= 0.8）强制置顶，不参与排序竞争
+- preference/procedural 通过正则模板转化为行为规则（无额外 LLM 调用）
+- 末尾强制约束："不确定就说不知道，绝对不要编造用户信息"
+
+**记忆提取流程**
+
+```
+对话内容 → LLM 分类（7种类型 + valence + confidence）
+         → MySQL memories 表（结构化存储，全 CRUD）
+         → mem0.add(infer=False) → ChromaDB（纯向量索引）
+```
 
 **记忆召回**
-- 每次收到新消息，用 mem0 混合检索（语义相似度 + 实体匹配）召回最相关的 5 条记忆
-- 召回的记忆注入 system prompt，让语晴能"想起来"之前说过的话
+- 每次收到新消息，mem0 混合检索（语义相似度）召回最相关的记忆
+- 按类型分流到三个注入层
+- 休眠记忆（30天未访问）补充召回
 
 **记忆生命周期**
-- **衰减**：长期不被访问的记忆重要性逐渐降低（90 天减半）
+- **衰减**：长期不被访问的记忆重要性逐渐降低（90 天减半，每次召回"年轻"5天）
 - **巩固**：每 20 轮对话自动合并相关记忆，压缩冗余
 - **休眠唤醒**：30 天未召回但语义相关的记忆会被主动消息系统重新激活
 
@@ -133,23 +162,24 @@
 - 防御机制：撒娇式调侃、害羞转移话题、故意唱反调（都是可爱的，不是冷漠的）
 - 情绪响应：6 种场景（用户难过/生气/兴奋/焦虑/离开/表达好感）各有对应行为策略
 - 关系动态：从 new_acquaintance → familiar → close → very_close 渐进解锁
+- 兴趣爱好：从 self_memories 动态生成，不写死在 YAML 中
 
-### 4. 语晴的心情系统（NEW）
+### 4. 语晴的心情系统
 
 语晴拥有自己独立的情绪状态，参照 Project Neuro 的 CognitiveState 设计：
 
 **三个维度**：
 | 维度 | 基线 | 含义 |
 |------|------|------|
-| `warmth` | 0.30 | 内在温暖度（0=冷漠 1=温暖） |
-| `openness` | 0.35 | 防线松紧度（0=高防御 1=敞开心扉） |
+| `warmth` | 0.40 | 内在温暖度（0=冷漠 1=温暖） |
+| `openness` | 0.45 | 防线松紧度（0=高防御 1=敞开心扉） |
 | `energy` | 0.45 | 能量水平（0=安静 1=有活力） |
 
 **五种状态**：
 | 状态 | 触发条件 | 行为表现 |
 |------|----------|----------|
 | `guarded` | 默认状态 | 正常人格表现 |
-| `withdrawn` | warmth<0.25 且 openness<0.30 | 更安静，回复以"..."为主 |
+| `withdrawn` | warmth<0.25 且 openness<0.30 | 更安静简短，偶尔刻薄，但绝不敷衍 |
 | `relaxed` | warmth>0.40 或 openness>0.45 | 放松，调侃更轻松，允许多说两句 |
 | `softened` | warmth>0.60 且 openness>0.60 | 不太一样，偶尔说平时不会说的话 |
 | `vulnerable` | warmth>0.80 且 openness>0.75 | 极罕见，防线崩塌，会说真正想说的话 |
@@ -159,23 +189,22 @@
 - **缺席衰减**：用户消失时温暖/敞开/能量逐小时衰减
 - **返场 bump**：用户回来时温暖+0.10（如释重负）但敞开-0.05（防御性掩饰）
 - **基线引力**：每次更新后温和拉回基线值，防止永久漂移
-- **零额外 LLM 调用**：纯关键词 + 启发式，不影响性能
 
 ### 5. 主动消息系统
 
 语晴不是被动等待，会主动发来消息。但因为她的人格是回避型，主动消息的风格是：
-- "..."、"你还没死啊"、"哦你还活着"
-- 偶尔（30%）流露一丝亲昵："今天有没有乖乖吃饭"，然后迅速转移话题
+- 偶尔流露一丝关心："今天有没有乖乖吃饭"，然后迅速转移话题
+- 绝不用"..."敷衍 — 即使简短也要有内容
 
 **4 种触发器**（按优先级）：
 | 触发器 | 条件 | 示例消息 |
 |--------|------|----------|
 | `emotion_followup` | 用户上次情绪很低落且已过 3 小时 | 推荐一首歌过来 |
-| `absence` | 用户 4 小时没发消息 | "..." |
+| `absence` | 用户 4 小时没发消息 | "你还活着啊" |
 | `memory` | 高重要性休眠记忆被随机选中 | "突然想起你说过..." |
 | `time_of_day` | 早 7-9 点 / 晚 9-11 点（每天一次） | "起了？" |
 
-**Rate Limiting**：任意两次主动消息间隔 ≥ 3 小时。
+**Rate Limiting**：任意两次主动消息间隔 >= 3 小时。安静时段 0:00-7:00。
 
 **前端集成**：SSE 长连接 + EventSource 自动重连 + 离线消息兜底（`/proactive/recent`）。
 
@@ -193,7 +222,7 @@
 
 - 每 5 轮对话触发一次学习
 - 置信度采用加权移动平均递增
-- 置信度 ≥ 0.5 的偏好注入 system prompt
+- 置信度 >= 0.5 的偏好注入 system prompt
 
 ---
 
@@ -267,7 +296,7 @@ yuqing/
 │       ├── config.py                 # 配置管理（pydantic-settings）
 │       ├── core/
 │       │   ├── cognitive.py          # CognitiveProcessor — 认知处理器（总编排）
-│       │   ├── memory.py             # MemoryManager — 记忆管理（mem0集成+衰减/巩固/召回）
+│       │   ├── memory.py             # MemoryManager — 分层记忆系统（mem0+MySQL）
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
@@ -275,10 +304,10 @@ yuqing/
 │       │   ├── proactive.py          # ProactiveManager — 主动消息系统
 │       │   └── llm.py                # litellm 封装（流式/非流式）
 │       ├── db/
-│       │   └── database.py           # MySQL 建表 + 连接池（9 张表）
+│       │   └── database.py           # MySQL 建表 + 连接池（10 张表）
 │       ├── prompts/
-│       │   ├── system_zh.txt.j2      # 中文 system prompt 模板
-│       │   └── system_en.txt.j2      # 英文 system prompt 模板
+│       │   ├── system_zh.txt.j2      # 中文 system prompt 模板（分层注入）
+│       │   └── system_en.txt.j2      # 英文 system prompt 模板（分层注入）
 │       └── api/routes/               # REST API 路由
 │           ├── chat.py               # 消息发送（SSE 流式）
 │           ├── conversations.py      # 对话管理
@@ -301,7 +330,9 @@ yuqing/
 │       ├── services/api.ts           # API 请求封装
 │       ├── types/index.ts            # TypeScript 类型定义
 │       └── i18n/                     # 中英文翻译
-└── data/chroma_db/                   # ChromaDB 持久化存储
+├── data/chroma_db/                   # ChromaDB 持久化存储
+└── docs/
+    └── memory-report.md              # 记忆系统技术报告
 ```
 
 ### 数据库表
@@ -310,7 +341,8 @@ yuqing/
 |----|------|
 | `conversations` | 对话列表 |
 | `messages` | 消息记录（含情绪标注） |
-| `memories` | 长期记忆（含衰减/巩固标记） |
+| `memories` | 长期记忆（7种类型 + 情绪metadata + 衰减/巩固标记） |
+| `self_memories` | 语晴的自我记忆（兴趣/经历，动态替代 YAML） |
 | `emotion_snapshots` | 用户情绪快照 |
 | `yuqing_mood_log` | 语晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |
@@ -333,7 +365,11 @@ yuqing/
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
 | `MEM0_ENABLED` | true | 是否启用 mem0 记忆引擎 |
-| `MEM0_EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，无需额外 API） |
+| `MEM0_EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，512维） |
+| `MEMORY_FACT_TOP_K` | 6 | 显式注入的事实/事件条数上限 |
+| `MEMORY_BEHAVIOR_RULES_MAX` | 8 | 行为规则最大条数 |
+| `MEMORY_EPISODIC_MAX` | 3 | 情景记忆最大条数 |
+| `SELF_MEMORY_ENABLED` | true | 是否启用自我记忆 |
 
 ### 主动消息参数（.env）
 
@@ -352,8 +388,8 @@ yuqing/
 | `YUQING_MOOD_ENABLED` | true | 是否启用心情系统 |
 | `YUQING_MOOD_EMA_ALPHA` | 0.15 | EMA 新信号权重 |
 | `YUQING_MOOD_HOURLY_DECAY` | 0.02 | 每小时缺席衰减率 |
-| `YUQING_MOOD_BASELINE_WARMTH` | 0.30 | 温暖度基线 |
-| `YUQING_MOOD_BASELINE_OPENNESS` | 0.35 | 敞开度基线 |
+| `YUQING_MOOD_BASELINE_WARMTH` | 0.40 | 温暖度基线 |
+| `YUQING_MOOD_BASELINE_OPENNESS` | 0.45 | 敞开度基线 |
 | `YUQING_MOOD_BASELINE_ENERGY` | 0.45 | 能量基线 |
 
 ---
@@ -421,6 +457,7 @@ yuqing/
 | **LLM** | 仅 OpenAI GPT-4 | 多模型支持（litellm） |
 | **数据库** | SQLite | MySQL 9（生产级） |
 | **向量检索** | 未内置 | mem0 + ChromaDB + BGE 中文嵌入 |
+| **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
 | **用户系统** | 多用户注册 | 单用户，无认证 |
 | **情绪系统** | 12 类关键词检测 + 心理健康追踪 | V-A 模型 + LLM 分析 + 语晴自身心情 |
 | **主动行为** | 无 | 4 种触发器 + 后台任务 + SSE 推送 |

@@ -4,15 +4,26 @@ import type { Message } from '../../types';
 const YUQING_AVATAR = '/avatar-yuqing.png';
 const USER_AVATAR = '/avatar-user.png';
 
+// Responses that are essentially empty and should not be rendered
+const EMPTY_RESPONSES = ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。'];
+
 interface Props {
   message: Message;
 }
 
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user';
-  const segments = (!isUser && message.content)
-    ? message.content.split('\n').filter(Boolean)
-    : [message.content || '...'];
+
+  // Don't render empty assistant messages (placeholder during streaming)
+  if (!isUser && !message.content) return null;
+
+  // Don't render essentially-empty assistant responses
+  if (!isUser && EMPTY_RESPONSES.includes(message.content.trim())) return null;
+
+  const segments = message.content.split('\n').filter(line => {
+    const t = line.trim();
+    return t && !EMPTY_RESPONSES.includes(t);
+  });
   const isSingleBubble = isUser || segments.length <= 1;
 
   if (isUser) {
@@ -21,7 +32,7 @@ export function MessageBubble({ message }: Props) {
         <div className="max-w-[65%] flex items-end gap-2">
           <div className="relative bg-[#95EC69] text-black rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words">
             <div className="absolute top-2 right-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-l-[6px] border-l-[#95EC69]" />
-            {message.content || '...'}
+            {message.content}
           </div>
           <img src={USER_AVATAR} alt="shouss" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
         </div>
@@ -29,7 +40,7 @@ export function MessageBubble({ message }: Props) {
     );
   }
 
-  // Multi-bubble rendering for assistant messages
+  // Single bubble assistant message
   if (isSingleBubble) {
     return (
       <div className="flex justify-start mb-3 px-4">
@@ -41,7 +52,7 @@ export function MessageBubble({ message }: Props) {
             )}
             <div className="relative bg-white text-black rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
               <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white" />
-              {message.content || '...'}
+              {message.content}
             </div>
           </div>
         </div>
@@ -49,6 +60,7 @@ export function MessageBubble({ message }: Props) {
     );
   }
 
+  // Multi-bubble assistant message
   return (
     <div className="mb-3">
       {message.trigger_type && (

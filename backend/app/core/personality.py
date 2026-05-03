@@ -88,7 +88,7 @@ class PersonalityEngine:
         self,
         language: str = "zh",
         current_mood: Optional[dict] = None,
-        recalled_memories: Optional[list] = None,
+        recalled_memories: Optional[dict] = None,
         yuqing_mood: Optional[dict] = None,
     ) -> str:
         personality = self.get_personality()
@@ -103,6 +103,13 @@ class PersonalityEngine:
             logger.debug(f"Failed to load preferences: {e}")
 
         try:
+            from app.core.memory import memory_manager
+            self_memories = await memory_manager.get_self_memories(limit=8)
+        except Exception as e:
+            logger.debug(f"Failed to load self memories: {e}")
+            self_memories = None
+
+        try:
             template = self._env.get_template(template_name)
         except Exception:
             template = self._env.get_template("system_zh.txt.j2")
@@ -110,9 +117,10 @@ class PersonalityEngine:
         return template.render(
             personality=personality,
             current_mood=current_mood,
-            recalled_memories=recalled_memories or [],
+            recalled_memories=recalled_memories or {},
             preference_hints=preference_hints,
             yuqing_mood=yuqing_mood,
+            self_memories=self_memories,
         )
 
 

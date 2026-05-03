@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     MEMORY_RECALL_COUNT: int = 5
     AUTO_MEMORY_EXTRACTION: bool = True
 
+    # Memory layered injection
+    MEMORY_FACT_TOP_K: int = 6
+    MEMORY_BEHAVIOR_RULES_MAX: int = 8
+    MEMORY_EPISODIC_MAX: int = 3
+    SELF_MEMORY_ENABLED: bool = True
+    MEMORY_CLASSIFY_ENABLED: bool = True
+
     # Memory decay & consolidation
     MEMORY_DECAY_ENABLED: bool = True
     MEMORY_DECAY_HALF_LIFE_DAYS: int = 90       # importance halved after 90 days without access
