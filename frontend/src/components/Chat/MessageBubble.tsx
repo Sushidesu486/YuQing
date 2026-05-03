@@ -20,8 +20,8 @@ export function MessageBubble({ message }: Props) {
   // Don't render essentially-empty assistant responses
   if (!isUser && EMPTY_RESPONSES.includes(message.content.trim())) return null;
 
-  const segments = message.content.split('\n').filter(line => {
-    const t = line.trim();
+  const segments = message.content.split(/\n\n+/).filter(block => {
+    const t = block.trim();
     return t && !EMPTY_RESPONSES.includes(t);
   });
   const isSingleBubble = isUser || segments.length <= 1;
@@ -70,7 +70,7 @@ export function MessageBubble({ message }: Props) {
         <div key={i} className="flex justify-start px-4 mb-1.5">
           <div className="max-w-[65%] flex items-start gap-2">
             <img src={YUQING_AVATAR} alt="语晴" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
-            <div className="relative bg-white text-black rounded-lg px-3 py-2 text-sm leading-relaxed break-words shadow-sm">
+            <div className="relative bg-white text-black rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
               <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white" />
               {seg}
             </div>

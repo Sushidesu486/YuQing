@@ -100,18 +100,20 @@ class CognitiveProcessor:
             yuqing_mood=yuqing_mood,
         )
 
-        # --- Phase 5: Store user message (before loading context so it's included) ---
+        # --- Phase 5: Store user message(s) (split batched messages) ---
         pool = await get_pool()
-        user_msg_id = _generate_id()
+        user_lines = [line.strip() for line in user_message.split('\n') if line.strip()]
+        v = user_emotion["valence"] if user_emotion else None
+        a = user_emotion["arousal"] if user_emotion else None
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                v = user_emotion["valence"] if user_emotion else None
-                a = user_emotion["arousal"] if user_emotion else None
-                await cur.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content, valence, arousal) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (user_msg_id, conversation_id, "user", user_message, v, a),
-                )
+                for line in user_lines:
+                    msg_id = _generate_id()
+                    await cur.execute(
+                        "INSERT INTO messages (id, conversation_id, role, content, valence, arousal) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (msg_id, conversation_id, "user", line, v, a),
+                    )
 
         # --- Phase 6: Load recent messages for context (includes the just-stored user message) ---
         messages = [{"role": "system", "content": system_prompt}]

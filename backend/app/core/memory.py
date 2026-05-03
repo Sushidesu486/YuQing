@@ -94,10 +94,22 @@ _SELF_EXPRESSION_PATTERNS = [
     r"我喜欢[^\n。]*",
     r"我觉得[^\n。]*",
     r"我认为[^\n。]*",
-    r"我看[过|过|完][^\n。]*",
+    r"我看[过完][^\n。]*",
     r"我最[^\n。]*",
     r"其实我[^\n。]*",
     r"我也[^\n。]*",
+    r"我又[不没是][^\n。]*",
+    r"我才[不没会][^\n。]*",
+    r"我当然[^\n。]*",
+    r"我连[^\n。]*",
+    r"我还是[^\n。]*",
+    r"我就[^\n。]*",
+    r"让我[^\n。]*",
+    r"我自己[^\n。]*",
+    r"本小姐[^\n。]*",
+    r"我跟你[说讲][^\n。]*",
+    r"我可[^\n。]*",
+    r"我不会?[^\n。]*",
 ]
 
 # ── mem0 singleton ──
@@ -147,14 +159,15 @@ def init_mem0():
 
 
 async def sync_memories_to_mem0():
-    """Sync existing MySQL memories to mem0 vector store.
-    Called once at startup to migrate pre-mem0 memories."""
+    """Sync ALL MySQL memories to mem0 vector store.
+    Called once at startup. Skips memories already present in mem0."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
+            # Sync ALL memories (including consolidated — they contain important merged facts)
             await cur.execute(
-                "SELECT id, content, category, importance FROM memories "
-                "WHERE is_consolidated = 0 ORDER BY importance DESC"
+                "SELECT id, content, category, memory_type, importance, "
+                "valence, confidence FROM memories ORDER BY importance DESC"
             )
             rows = await cur.fetchall()
 
@@ -173,10 +186,19 @@ async def sync_memories_to_mem0():
         if row["id"] in existing_ids:
             continue
         try:
+            metadata = {
+                "category": row["category"] or "fact",
+                "memory_type": row.get("memory_type") or row["category"] or "fact",
+                "importance": float(row["importance"] or 0.5),
+                "confidence": float(row.get("confidence") or 0.5),
+            }
+            valence = row.get("valence")
+            if valence is not None:
+                metadata["valence"] = float(valence)
             mem0.add(
                 row["content"],
                 user_id=_MEM0_USER_ID,
-                metadata={"category": row["category"], "importance": row["importance"]},
+                metadata=metadata,
                 infer=False,
             )
             synced += 1
@@ -244,13 +266,39 @@ class MemoryManager:
         # 2. Search memories via mem0 or MySQL fallback (expanded to top_k=10)
         recalled = await self.search_memories(user_message, top_k=10)
 
-        # 3. Dormant memory reactivation
+        # 3. Ensure pinned facts (importance >= 0.8) are always included
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, memory_type, importance, valence, confidence "
+                    "FROM memories WHERE importance >= 0.8 "
+                    "ORDER BY importance DESC LIMIT 10"
+                )
+                pinned_rows = await cur.fetchall()
+        recalled_ids = {r["id"] for r in recalled}
+        for row in pinned_rows:
+            if row["id"] not in recalled_ids:
+                recalled.append({
+                    "id": row["id"],
+                    "content": row["content"],
+                    "distance": 0.0,
+                    "metadata": {
+                        "category": row.get("memory_type") or row.get("category", "fact"),
+                        "importance": row["importance"],
+                        "memory_type": row.get("memory_type") or row.get("category", "fact"),
+                        "valence": float(row["valence"]) if row.get("valence") is not None else None,
+                        "confidence": float(row["confidence"]) if row.get("confidence") is not None else 0.5,
+                    },
+                })
+
+        # 4. Dormant memory reactivation
         dormant = await self.get_dormant_memories(user_message)
         for d in dormant:
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
-        # 4. Build layered memory structure
+        # 5. Build layered memory structure
         layered_memory = await self._build_layered_memory(recalled)
 
         return messages_context, layered_memory
@@ -537,25 +585,38 @@ class MemoryManager:
         """Check if assistant_response contains self-expression and store in self_memories.
 
         Uses simple keyword-based approach: if the assistant talks about
-        "我喜欢/我觉得/我认为/我看过" etc., store as self_reflection.
+        "我喜欢/我觉得/我认为/我看过/我又/我才" etc., store as self_reflection.
+        Max 3 per response to avoid noise.
         """
+        stored_count = 0
+        seen_prefixes = set()
+
         for pattern in _SELF_EXPRESSION_PATTERNS:
+            if stored_count >= 3:
+                break
+
             match = re.search(pattern, assistant_response)
             if match:
-                content = match.group(0).strip().rstrip("。，！？,")
-                if len(content) < 3:
+                content = match.group(0).strip().rstrip("。，！？,?")
+                if len(content) < 4:
+                    continue
+
+                # Dedup by first 8 characters
+                prefix = content[:8]
+                if prefix in seen_prefixes:
                     continue
 
                 try:
                     pool = await get_pool()
                     async with pool.acquire() as conn:
                         async with conn.cursor() as cur:
-                            # Avoid near-duplicates
+                            # Avoid exact duplicates in DB
                             await cur.execute(
-                                "SELECT id FROM self_memories WHERE content LIKE %s LIMIT 1",
-                                (f"%{content[:20]}%",),
+                                "SELECT id FROM self_memories WHERE content = %s LIMIT 1",
+                                (content,),
                             )
                             if await cur.fetchone():
+                                seen_prefixes.add(prefix)
                                 continue
 
                             mem_id = _generate_id()
@@ -565,16 +626,27 @@ class MemoryManager:
                                 "VALUES (%s, %s, %s, %s, %s)",
                                 (mem_id, content, "self_reflection", 0.5, conversation_id),
                             )
-                    logger.debug(f"Stored self-memory: {content[:50]}")
+                            stored_count += 1
+                            seen_prefixes.add(prefix)
+                            logger.debug(f"Stored self-memory: {content[:50]}")
                 except Exception as e:
                     logger.warning(f"Failed to store self-memory: {e}")
 
     # ── Memory search ──
 
     async def search_memories(self, query: str, top_k: int = 5) -> list:
-        """Search long-term memories by query."""
+        """Search long-term memories by query.
+        Uses mem0 for semantic search, falls back to MySQL if mem0 returns few results."""
         if settings.MEM0_ENABLED:
-            return await self._search_via_mem0(query, top_k)
+            results = await self._search_via_mem0(query, top_k=top_k)
+            # If mem0 has very few results, supplement with MySQL high-importance memories
+            if len(results) < top_k:
+                mysql_results = await self._search_via_mysql(query, top_k=top_k)
+                existing_ids = {r["id"] for r in results}
+                for r in mysql_results:
+                    if r["id"] not in existing_ids:
+                        results.append(r)
+            return results
         return await self._search_via_mysql(query, top_k)
 
     async def _search_via_mem0(self, query: str, top_k: int) -> list:
@@ -604,7 +676,8 @@ class MemoryManager:
         return memories
 
     async def _search_via_mysql(self, query: str, top_k: int) -> list:
-        """Fallback: return recent high-importance memories from MySQL."""
+        """Fallback: return recent high-importance memories from MySQL.
+        Includes consolidated memories with high importance (e.g. merged name facts)."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -612,7 +685,7 @@ class MemoryManager:
                     "SELECT id, content, category, importance, "
                     "memory_type, valence, confidence "
                     "FROM memories "
-                    "WHERE is_consolidated = 0 AND importance > 0.2 "
+                    "WHERE importance > 0.2 "
                     "ORDER BY importance DESC LIMIT %s",
                     (top_k,),
                 )

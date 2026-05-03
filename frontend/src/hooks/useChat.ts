@@ -14,7 +14,7 @@ interface SSEData {
 }
 
 const CONVERSATION_KEY = 'yuqing_conversation_id';
-const COOLDOWN_MS = 10000;
+const COOLDOWN_MS = 20000;
 
 const PLACEHOLDER_ID = '__streaming_placeholder__';
 
@@ -70,9 +70,6 @@ export function useChat() {
     // Add assistant placeholder (empty content — MessageBubble won't render it)
     setMessages((prev) => [...prev, { id: PLACEHOLDER_ID, role: 'assistant' as const, content: '' }]);
 
-    // Build form data for POST (EventSource only supports GET, so we use fetch + EventSource differently)
-    // Actually, EventSource is GET-only. We need to use fetch for POST, but parse SSE manually.
-    // Instead, let's use a simpler approach: POST to send, then GET to stream.
     const convId = conversationIdRef.current;
     const batch = pending.join('\n');
     const lang = localStorage.getItem('language') || 'zh';
@@ -91,66 +88,23 @@ export function useChat() {
         throw new Error(`HTTP ${postRes.status}`);
       }
 
-      // Read the full SSE response
+      // Read the full SSE response with line buffering to handle chunk boundaries
       const reader = postRes.body?.getReader();
       if (!reader) throw new Error('No response body');
 
       const decoder = new TextDecoder();
       let fullContent = '';
+      let lineBuffer = '';
+      let doneHandled = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        // Parse SSE format: lines starting with "data: " contain JSON
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data: ')) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
-
-          try {
-            const data: SSEData = JSON.parse(jsonStr);
-            if (data.type === 'token' && data.content) {
-              fullContent += data.content;
-            } else if (data.type === 'error') {
-              console.error('SSE error:', data.error);
-              setError(data.error || 'Unknown error');
-            } else if (data.type === 'done') {
-              console.log('[Chat] done event received, content length:', fullContent.length);
-              const trimmed = fullContent.trim();
-              const isEmpty = !trimmed || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。'].includes(trimmed);
-              setMessages((prev) => {
-                const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
-                if (idx === -1) return prev; // placeholder already removed
-                if (isEmpty) {
-                  // Remove placeholder — don't show empty/useless responses
-                  return prev.filter((_, i) => i !== idx);
-                }
-                const updated = [...prev];
-                updated[idx] = {
-                  ...updated[idx],
-                  id: data.message_id || updated[idx].id,
-                  content: fullContent,
-                  created_at: new Date().toISOString(),
-                };
-                return updated;
-              });
-              if (data.conversation_id) {
-                conversationIdRef.current = data.conversation_id;
-                localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
-              }
-            }
-          } catch (e) {
-            // Malformed JSON line, skip
-          }
-        }
-      }
-
-      // If done event was never received but we have content, update anyway
-      if (fullContent) {
-        const trimmed = fullContent.trim();
-        const isEmpty = !trimmed || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。'].includes(trimmed);
+      const applyCleanedContent = (messageId?: string) => {
+        const cleaned = fullContent
+          .split(/\n\n+/)
+          .map(p => p.trim())
+          .filter(p => p && !/^[.……]+$/.test(p))
+          .join('\n\n')
+          .trim();
+        const isEmpty = !cleaned || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。', '…'].includes(cleaned);
         setMessages((prev) => {
           const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
           if (idx === -1) return prev;
@@ -158,11 +112,82 @@ export function useChat() {
           const updated = [...prev];
           updated[idx] = {
             ...updated[idx],
-            content: fullContent,
+            id: messageId || updated[idx].id,
+            content: cleaned,
             created_at: new Date().toISOString(),
           };
           return updated;
         });
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        // Append to buffer and process complete lines
+        lineBuffer += chunk;
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in the buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+
+          let data: SSEData;
+          try {
+            data = JSON.parse(jsonStr);
+          } catch {
+            // Malformed JSON line, skip
+            continue;
+          }
+
+          if (data.type === 'token' && data.content) {
+            fullContent += data.content;
+            // Update placeholder with streaming content for real-time display
+            setMessages((prev) => {
+              const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
+              if (idx === -1) return prev;
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx], content: fullContent };
+              return updated;
+            });
+          } else if (data.type === 'error') {
+            console.error('SSE error:', data.error);
+            setError(data.error || 'Unknown error');
+          } else if (data.type === 'done' && !doneHandled) {
+            doneHandled = true;
+            console.log('[Chat] done event received, content length:', fullContent.length);
+            applyCleanedContent(data.message_id);
+            if (data.conversation_id) {
+              conversationIdRef.current = data.conversation_id;
+              localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
+            }
+          }
+        }
+      }
+
+      // Process any remaining buffered data after stream ends
+      if (lineBuffer.startsWith('data: ')) {
+        const jsonStr = lineBuffer.slice(6).trim();
+        if (jsonStr) {
+          try {
+            const data: SSEData = JSON.parse(jsonStr);
+            if (data.type === 'done' && !doneHandled) {
+              doneHandled = true;
+              applyCleanedContent(data.message_id);
+            }
+          } catch {
+            // Malformed JSON in buffer
+          }
+        }
+      }
+
+      // Fallback: if done event was never received but we have content, update anyway
+      if (!doneHandled && fullContent) {
+        applyCleanedContent();
       }
     }).catch((err) => {
       console.error('[Chat] flush error:', err);

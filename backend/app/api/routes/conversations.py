@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from app.db.database import get_pool, _generate_id
 
@@ -48,7 +49,7 @@ async def get_conversation(conversation_id: str):
             )
             conv = await cur.fetchone()
             if not conv:
-                return {"error": "conversation not found"}, 404
+                return JSONResponse({"error": "conversation not found"}, status_code=404)
 
             await cur.execute(
                 "SELECT id, role, content, valence, arousal, model_used, created_at "
@@ -82,6 +83,31 @@ async def delete_conversation(conversation_id: str):
                 "DELETE FROM conversations WHERE id = %s", (conversation_id,)
             )
     return {"ok": True}
+
+
+@router.get("/conversations/{conversation_id}/search")
+async def search_messages(conversation_id: str, q: str = "", limit: int = 50, offset: int = 0):
+    pool = await get_pool()
+    if not q.strip():
+        return {"results": [], "total": 0}
+    keyword = f"%{q.strip()}%"
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                "SELECT COUNT(*) as cnt FROM messages "
+                "WHERE conversation_id = %s AND content LIKE %s",
+                (conversation_id, keyword),
+            )
+            total = (await cur.fetchone())["cnt"]
+
+            await cur.execute(
+                "SELECT id, role, content, created_at FROM messages "
+                "WHERE conversation_id = %s AND content LIKE %s "
+                "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                (conversation_id, keyword, limit, offset),
+            )
+            rows = await cur.fetchall()
+    return {"results": rows, "total": total}
 
 
 # Need to import aiomysql at top for DictCursor

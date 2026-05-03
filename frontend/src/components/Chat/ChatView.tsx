@@ -1,12 +1,19 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useChat } from '../../hooks/useChat';
 import { useProactive } from '../../hooks/useProactive';
 import { MessageList } from './MessageList';
 import { InputBar } from './InputBar';
+import { SearchPanel } from './SearchPanel';
 import type { Message } from '../../types';
 
-export function ChatView() {
+interface Props {
+  searchOpen: boolean;
+  onSearchOpenChange: (open: boolean) => void;
+}
+
+export function ChatView({ searchOpen, onSearchOpenChange }: Props) {
   const { messages, isTyping, error, loading, sendMessage, initSession, addProactiveMessage, conversationId } = useChat();
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     initSession();
@@ -21,6 +28,17 @@ export function ChatView() {
     onMessage: handleProactiveMessage,
   });
 
+  // Auto-clear highlight after 2.5s
+  useEffect(() => {
+    if (!highlightMessageId) return;
+    const t = setTimeout(() => setHighlightMessageId(null), 2500);
+    return () => clearTimeout(t);
+  }, [highlightMessageId]);
+
+  const handleSearchSelect = useCallback((msgId: string) => {
+    setHighlightMessageId(msgId);
+  }, []);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 chat-bg">
@@ -30,8 +48,8 @@ export function ChatView() {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <MessageList messages={messages} isStreaming={isTyping} />
+    <div className="flex flex-col flex-1 min-h-0 relative">
+      <MessageList messages={messages} isStreaming={isTyping} highlightMessageId={highlightMessageId} />
       {error && (
         <div className="px-4 pb-1 bg-white">
           <div className="text-xs text-red-500 px-3 py-1.5">
@@ -40,6 +58,12 @@ export function ChatView() {
         </div>
       )}
       <InputBar onSend={sendMessage} disabled={false} />
+      <SearchPanel
+        open={searchOpen}
+        conversationId={conversationId}
+        onClose={() => onSearchOpenChange(false)}
+        onSelect={handleSearchSelect}
+      />
     </div>
   );
 }

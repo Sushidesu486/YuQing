@@ -713,4 +713,11 @@ WHERE (last_accessed IS NULL OR last_accessed < NOW() - INTERVAL 30 DAY)
   AND importance > 0.2
   AND is_consolidated = 0
 ORDER BY last_accessed ASC;
+
+-- 搜索对话内消息（前端搜索功能使用）
+SELECT id, role, content, created_at
+FROM messages
+WHERE conversation_id = ?
+  AND content LIKE ?
+ORDER BY created_at DESC LIMIT ? OFFSET ?;
 ```

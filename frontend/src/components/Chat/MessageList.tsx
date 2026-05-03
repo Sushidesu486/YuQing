@@ -5,6 +5,7 @@ import { MessageBubble } from './MessageBubble';
 interface Props {
   messages: Message[];
   isStreaming: boolean;
+  highlightMessageId?: string | null;
 }
 
 function formatTimeDivider(dateStr: string): string {
@@ -30,16 +31,34 @@ function shouldShowDivider(current: Message, prev: Message | null): boolean {
   return diff > 5 * 60 * 1000; // 5 minutes
 }
 
-export function MessageList({ messages, isStreaming }: Props) {
+export function MessageList({ messages, isStreaming, highlightMessageId }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (isAtBottomRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
+
+  // Scroll to highlighted message
+  useEffect(() => {
+    if (!highlightMessageId) return;
+    const el = document.getElementById(`msg-${highlightMessageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    // Clear highlight after 2.5s
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      // The parent component handles clearing highlightMessageId state
+    }, 2500);
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, [highlightMessageId]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -67,6 +86,7 @@ export function MessageList({ messages, isStreaming }: Props) {
       {messages.map((msg, i) => {
         const prev = i > 0 ? messages[i - 1] : null;
         const showDivider = shouldShowDivider(msg, prev);
+        const isHighlighted = msg.id === highlightMessageId;
 
         return (
           <React.Fragment key={msg.id}>
@@ -77,7 +97,16 @@ export function MessageList({ messages, isStreaming }: Props) {
                 </span>
               </div>
             )}
-            <MessageBubble message={msg} />
+            <div
+              id={`msg-${msg.id}`}
+              className={`transition-all duration-700 rounded-lg ${
+                isHighlighted
+                  ? 'ring-2 ring-yellow-400 ring-offset-1 bg-yellow-50'
+                  : ''
+              }`}
+            >
+              <MessageBubble message={msg} />
+            </div>
           </React.Fragment>
         );
       })}

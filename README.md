@@ -28,7 +28,7 @@
 │              微信风格单会话聊天界面 (React + TS)              │
 │                                                             │
 │  ChatView ─ MessageList ─ MessageBubble ─ InputBar          │
-│  EmotionDisplay ─ SettingsModal ─ Sidebar                   │
+│  SearchPanel ─ EmotionDisplay ─ SettingsModal ─ Sidebar    │
 │  useChat ─ useConversations ─ useProactive (SSE hooks)      │
 └────────────────────────┬────────────────────────────────────┘
                          │ SSE Streaming + EventSource
@@ -41,7 +41,8 @@
 │  Phase 2.5: 语晴自身心情更新                                   │
 │  Phase 3:  分层记忆召回 (mem0 + MySQL)                        │
 │  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
-│  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成               │
+│  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成              │
+│             用户消息按行拆分存储，合并文本用于记忆提取          │
 │  Phase 9:  记忆分类提取 / 记忆衰减 / 巩固 / 自我记忆 / 偏好学习 │
 │                                                              │
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
@@ -99,7 +100,7 @@
 | `episodic` | 带情绪色彩的情景记忆 | 情感层注入 | "聊到学历偏见时用户很激动" |
 | `emotion` | 情绪记忆（情感模式） | 影响 mood 系统 | "用户被质疑能力时会愤怒" |
 | `preference` | 用户偏好 | 转化为行为规则 | "用户不喜欢被说教" |
-| `proference` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
+| `procedural` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
 | `self_reflection` | 语晴的自我记忆 | 替代 YAML interests | "和shouss聊了ACG话题" |
 
 **分层注入机制**
@@ -258,6 +259,16 @@ npm run dev
 
 打开 `http://localhost:5173` 开始聊天。
 
+### 前端特性
+
+| 特性 | 说明 |
+|------|------|
+| 微信风格聊天 | 绿色气泡（用户）/ 白色气泡（语晴），支持多气泡拆分 |
+| 消息搜索 | 右上角搜索入口，关键词/日期搜索，点击定位到消息位置 |
+| 实时流式显示 | LLM 回复逐字显示，无需等待完成 |
+| 消息批量发送 | 20 秒冷却窗口内多条消息自动合并发送 |
+| 自动清理 | 空白/"..."等无意义回复自动过滤不显示 |
+
 ### 切换 LLM
 
 编辑 `.env`：
@@ -322,6 +333,11 @@ yuqing/
 │   └── src/
 │       ├── components/
 │       │   ├── Chat/                 # 微信风格聊天组件
+│       │   │   ├── ChatView.tsx       # 聊天主视图
+│       │   │   ├── MessageList.tsx    # 消息列表（滚动定位 + 高亮）
+│       │   │   ├── MessageBubble.tsx  # 消息气泡（多气泡拆分）
+│       │   │   ├── SearchPanel.tsx    # 历史消息搜索面板
+│       │   │   └── InputBar.tsx       # 消息输入框
 │       │   ├── Layout/               # 页面布局 + Header
 │       │   ├── Emotion/              # 情绪显示
 │       │   ├── Settings/             # 设置面板
@@ -403,6 +419,7 @@ yuqing/
 | POST | `/api/chat/send` | 发送消息，SSE 流式返回 |
 | GET | `/api/conversations` | 对话列表 |
 | GET | `/api/conversations/{id}` | 对话详情 + 历史消息 |
+| GET | `/api/conversations/{id}/search?q=xxx` | 搜索对话内消息 |
 
 ### 记忆
 
