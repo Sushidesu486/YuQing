@@ -1,7 +1,7 @@
 # YuQing 数据库技术文档
 
 > 数据库: MySQL 9 | 字符集: utf8mb4 | 引擎: InnoDB
-> 最后更新: 2026-05-03
+> 最后更新: 2026-05-04
 
 ---
 
@@ -25,6 +25,7 @@ conversations ─── 1:N ── self_memories (source_conversation_id)
 
 独立表:
   user_preferences    (自增 PK, preference_key UNIQUE)
+  knowledge_items     (独立表，带 expires_at 时效性)
 ```
 
 ---
@@ -430,6 +431,42 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 ---
 
+### 2.12 knowledge_items — 信息检索知识条目
+
+存储语晴通过 Tavily API 主动/被动检索到的知识，带时效性。7 天后自动过期，不再注入 system prompt。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `id` | CHAR(32) | PK | 自生成 ID |
+| `topic` | VARCHAR(128) | NOT NULL | 话题分类（"ACG"、"AI技术"、"音乐"等） |
+| `content` | TEXT | NOT NULL | LLM 总结后的内容（2-3 句话） |
+| `source_url` | VARCHAR(512) | NULL | 原始来源链接 |
+| `retrieved_at` | DATETIME | NOT NULL, DEFAULT NOW | 检索时间 |
+| `expires_at` | DATETIME | NOT NULL | 过期时间（retrieved_at + N 天） |
+| `is_valid` | TINYINT | NOT NULL, DEFAULT 1 | 是否有效（可手动失效） |
+| `source_type` | ENUM('proactive','reactive') | DEFAULT 'proactive' | proactive=主动定时检索，reactive=对话中触发 |
+
+**索引**: `idx_topic_valid (topic, is_valid)`、`idx_expires (expires_at)`
+
+**查询方式**: `WHERE is_valid = 1 AND expires_at > NOW() ORDER BY retrieved_at DESC`
+
+```sql
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id CHAR(32) PRIMARY KEY,
+    topic VARCHAR(128) NOT NULL,
+    content TEXT NOT NULL,
+    source_url VARCHAR(512) DEFAULT NULL,
+    retrieved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    is_valid TINYINT NOT NULL DEFAULT 1,
+    source_type ENUM('proactive', 'reactive') DEFAULT 'proactive',
+    INDEX idx_topic_valid (topic, is_valid),
+    INDEX idx_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+---
+
 ## 3. 外键关系
 
 ```
@@ -460,6 +497,8 @@ proactive_messages.conversation_id → conversations.id    ON DELETE CASCADE
 | yuqing_mood_log | idx_mood_time | (created_at) | 心情趋势查询 |
 | proactive_messages | idx_proactive_time | (conversation_id, created_at) | 主动消息历史查询 |
 | user_preferences | preference_key (UNIQUE) | (preference_key) | 保证每个维度唯一 |
+| knowledge_items | idx_topic_valid | (topic, is_valid) | 按话题查询有效知识 |
+| knowledge_items | idx_expires | (expires_at) | 过期知识过滤 |
 
 ---
 
@@ -520,11 +559,13 @@ async def lifespan(app: FastAPI):
     init_mem0()               # 初始化 mem0 客户端（同步）
     await sync_memories_to_mem0()  # 旧记忆同步到 mem0 向量库
     task = asyncio.create_task(proactive_background_task())  # 启动主动消息后台任务
+    info_task = asyncio.create_task(info_retrieval_background_task())  # 启动信息检索后台任务
 
     yield  # 应用运行中
 
     # 关闭
     task.cancel()
+    info_task.cancel()
     await close_pool()        # 释放连接池
 ```
 
@@ -533,8 +574,9 @@ async def lifespan(app: FastAPI):
 2. `init_mem0()` — 初始化 mem0 Memory 客户端（设置 `LITELLM_API_BASE` 环境变量 → `Memory.from_config()`）
 3. `sync_memories_to_mem0()` — 查询 MySQL 中 `is_consolidated=0` 的记忆，逐条 `mem0.add(infer=False)` 同步到 ChromaDB（跳过已存在的）
 4. 启动 `proactive_background_task()` — 每 120s 检查主动消息触发条件
+5. 启动 `info_retrieval_background_task()` — 启动 5 分钟后首次检索，之后每 8 小时按兴趣搜索新闻
 
-**关闭顺序**: 取消后台任务 → 释放连接池。
+**关闭顺序**: 取消所有后台任务 → 释放连接池。
 
 ### 5.3 连接使用模式
 
@@ -735,4 +777,24 @@ GROUP BY memory_type;
 SELECT memory_type, content, importance, created_at
 FROM self_memories WHERE is_consolidated = 1
 ORDER BY created_at DESC LIMIT 20;
+
+-- 查看当前有效的知识条目（未过期）
+SELECT topic, content, source_type, retrieved_at, expires_at
+FROM knowledge_items
+WHERE is_valid = 1 AND expires_at > NOW()
+ORDER BY retrieved_at DESC;
+
+-- 查看已过期的知识条目
+SELECT topic, content, source_type, retrieved_at, expires_at
+FROM knowledge_items
+WHERE expires_at <= NOW()
+ORDER BY expires_at DESC;
+
+-- 查看语晴当前的自我叙事
+SELECT `key`, value FROM app_settings WHERE `key` = 'self_narrative';
+
+-- 查看记忆纠正记录（被标记失效的记忆）
+SELECT id, content, memory_type, is_invalid
+FROM memories WHERE is_invalid = 1
+ORDER BY created_at DESC LIMIT 10;
 ```

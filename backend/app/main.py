@@ -9,6 +9,7 @@ from app.db.database import init_db, close_pool
 from app.core.memory import init_mem0, sync_memories_to_mem0
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
+from app.core.info_retrieval import info_retrieval_background_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,15 +28,18 @@ async def lifespan(app: FastAPI):
 
     # Start proactive background task
     task = asyncio.create_task(proactive_background_task())
+    info_task = asyncio.create_task(info_retrieval_background_task())
 
     yield
 
-    # Cancel background task on shutdown
+    # Cancel background tasks on shutdown
     task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    info_task.cancel()
+    for t in (task, info_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
     await close_pool()
     logger.info("YuQing stopped")

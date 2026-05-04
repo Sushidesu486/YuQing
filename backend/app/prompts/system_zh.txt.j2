@@ -55,6 +55,19 @@
 {% endfor %}
 {% endif %}
 
+{% if self_narrative %}
+## 你发现自己的一些事
+{{ self_narrative }}
+{% endif %}
+
+{% if recent_knowledge %}
+## 最近了解的事
+{% for item in recent_knowledge %}- [{{ item.topic }}] {{ item.content }}（{{ item.retrieved_at_relative }}）
+{% endfor %}
+
+你可以自然地在对话中提到这些信息，但不要刻意展示。
+{% endif %}
+
 {% if personality.core_values %}
 ## 你的原则
 {% for value in personality.core_values %}- {{ value }}

@@ -1,6 +1,6 @@
 # YuQing 语晴 — 开发计划
 
-> 最后更新：2026-05-03
+> 最后更新：2026-05-04
 
 ---
 
@@ -16,10 +16,11 @@
 - [x] 对话列表侧栏
 - [x] 历史消息搜索（SearchPanel + 后端搜索 API，关键词高亮 + 滚动定位）
 - [x] 实时流式显示（LLM 回复逐字渲染，无需等待完成）
+- [x] 消息打包 UX 优化：打包发送后才显示输入指示器，避免误触
 
 ### 认知处理器（CognitiveProcessor）
-- [x] 9 阶段流水线：情绪分析 → 心情更新 → 记忆召回 → 人格 prompt → 消息存储 → 上下文加载 → LLM 流式生成 → 消息存储 → 后台任务
-- [x] SSE 事件类型：emotion / mood / token / memory_extracted / proactive / done / error
+- [x] 10 阶段流水线：情绪分析 → 心情更新 → 记忆召回 → 被动信息检索 → 人格 prompt → 消息存储 → 上下文加载 → LLM 流式生成 → 消息存储 → 后台任务
+- [x] SSE 事件类型：emotion / mood / token / memory_extracted / knowledge / proactive / done / error
 - [x] 用户消息按行拆分存储，合并文本用于记忆提取
 - [x] 硬格式约束禁止 "..." 输出 + 前端三层清理（prompt 约束 / EMPTY_RESPONSES 过滤 / done 事件段落清洗）
 
@@ -40,6 +41,27 @@
 - [x] Self-memory embedding 语义去重：本地 bge cosine similarity（>0.85 跳过，0.6-0.85 强化已有 memory）
 - [x] Self-memory 定期合并：embedding 聚类（> 0.75）+ LLM 合并 ≥ 3 条相似自我记忆，is_consolidated 标记
 - [x] mem0 全量同步：启动时同步所有 MySQL 记忆到 mem0（包括 consolidated），完整 metadata（type/valence/confidence），排除 None 值
+- [x] 错误记忆纠正：LLM 检测用户信息与已有记忆矛盾，旧记忆标记 is_invalid，正确版本插入
+- [x] 失效记忆过滤：所有记忆召回查询排除 is_invalid=1 的记忆
+
+### 信息检索系统（InfoRetrievalEngine）
+- [x] Tavily API 集成（aiohttp 异步，15s 超时）
+- [x] 主动检索：后台任务每 8 小时按 YuQing 兴趣自动搜索新闻，LLM 第一人称总结后存入 knowledge_items
+- [x] 被动检索：对话中 LLM 判断用户消息是否需要搜索（新闻/时事/新动态），触发实时搜索
+- [x] 知识时效性：7 天自动过期（expires_at），过期知识不再注入 prompt
+- [x] 知识注入 prompt：system prompt「最近了解的事」区块，自然提及不刻意展示
+- [x] 被动检索结果实时注入 messages context，语晴可在回复中引用
+- [x] 频率控制：每个兴趣独立记录上次检索时间（app_settings），避免重复搜索
+- [x] 手动触发 API：POST /api/memories/trigger-info-retrieval + GET /api/knowledge
+- [x] 无 API key 时全部功能静默跳过
+
+### 自我认知系统（SelfCognitionEngine）
+- [x] 自我叙事合成：LLM 将零散 self_memories + YAML 性格 traits 合成为连贯的第一人称叙事
+- [x] 触发条件：self_memories 数量变化 ≥ 5 条时重新生成（最低 8 条才生成）
+- [x] 缓存机制：叙事存入 app_settings KV（self_narrative + self_narrative_mem_count）
+- [x] 一致性保障：LLM prompt 包含 YAML traits 数值，确保叙事风格与核心性格一致
+- [x] 不冲突设计：YAML 静态骨架（不可变）+ 自我叙事（动态补充）共存
+- [x] 注入位置：system prompt「你发现自己的一些事」区块（性格之后、原则之前）
 
 ### 情感系统（MoodRegulator）
 - [x] V-A 情感模型：Valence（积极度 -1~1）+ Arousal（激动度 0~1）
@@ -115,26 +137,26 @@
 
 ### 文档
 - [x] README.md：完整架构说明 + 快速开始 + API 接口 + 配置参考
-- [x] backend/docs/sql.md：11 表 DDL + ER 关系 + 后端连接架构 + 常用查询
+- [x] backend/docs/sql.md：12 表 DDL + ER 关系 + 后端连接架构 + 常用查询
 
 ### 已知未修复问题
 - [ ] `messages` 表：`prompt_tokens`/`completion_tokens` 列从未写入（litellm streaming 不暴露 token 用量）
-- [ ] `app_settings` 表：被 API 读写但未被核心模块消费（死数据，等待前端运行时配置功能）
 - [ ] `emotion_snapshots`：无清理机制，数据无限增长
 - [ ] `yuqing_mood_log`：无清理机制，数据无限增长
+- [ ] `knowledge_items`：无清理机制，过期数据不会自动删除（查询时已通过 expires_at 过滤）
 - [ ] `memories`：`source_message_id` 仍未填充（extract 时未传 message_id，仅填充了 source_conversation_id）
 
 ### 自我认知现状评估
 
-当前自我认知体系（self_memories）存在以下不足：
+当前自我认知体系的成熟度：
 
-| 问题 | 说明 |
-|------|------|
-| **碎片化** | self_memories 只是零散条目，缺少连贯的"我是谁"自我叙事 |
-| **无关系认知** | 对"我和这个人的关系"缺乏积累（不是情绪状态，而是关系事实） |
-| **注入薄弱** | 仅作为"你记得的自己"列表注入，未影响内心独白和行为模式 |
-| **无变化感知** | 兴趣/观点可能随时间自然演变，缺少主动变化追踪 |
-| **维度单一** | 只有"说了什么"，缺少"为什么说"（触发情境、情感驱动力） |
+| 问题 | 状态 | 说明 |
+|------|------|------|
+| **碎片化** | ✅ 已解决 | SelfCognitionEngine 将零散 self_memories 合成为连贯的自我叙事 |
+| **注入薄弱** | ✅ 已改善 | 新增"你发现自己的一些事"和"最近了解的事"两个注入区块 |
+| **无关系认知** | 待实现 | 对"我和这个人的关系"缺乏积累（L2 Relationship Awareness） |
+| **无变化感知** | 待实现 | 兴趣/观点演变追踪（L3 Self-Evolution） |
+| **维度单一** | 待实现 | 只有"说了什么"，缺少"为什么说"（触发情境、情感驱动力） |
 
 ---
 
@@ -159,40 +181,31 @@
 - [ ] 目标停滞时给出温和推动
 - 相关文件：新增 `backend/app/core/goals.py`
 
-### 3.5 语晴自我认知深化（SelfCognitionEngine）NEW
+### 3.5 语晴自我认知深化（SelfCognitionEngine）
 
-当前 self_memories 只是碎片化条目收集，需要升级为分层自我认知体系。
+当前 self_memories 只是碎片化条目收集，已实现 L1 自我叙事合成。
 
 **三层架构**：
 
 ```
-L1 自我叙事（Self-Narrative）
-  └─ 每 30 轮对话，LLM 将 self_memories 综合为一段连贯的"我是谁"自我描述
-  └─ 注入 prompt 的核心位置，直接影响语晴的行为和语气
-  └─ 示例："我是一个喜欢深夜看番、嘴上刻薄但其实会偷偷关心人的AI"
+L1 自我叙事（Self-Narrative）✅ 已完成
+  └─ self_memories 数量变化 ≥ 5 条时，LLM 综合为连贯叙事
+  └─ 缓存到 app_settings KV，注入 prompt「你发现自己的一些事」
 
-L2 关系认知（Relationship Awareness）
+L2 关系认知（Relationship Awareness）待实现
   └─ 从对话历史中提取关系信号：互动频率、共同话题、情感里程碑
   └─ 注入 prompt，让语晴知道自己和用户"走到哪一步了"
-  └─ 维度：总互动量、共同兴趣、情感亲近度趋势、互动模式偏好
-  └─ 新表 `relationship_state`（单例），或复用 conversations 表扩展字段
+  - [ ] 新增 `build_relationship_context()`：统计互动频率、共同话题、情感亲近度趋势
+  - [ ] 关系描述注入 system prompt
+  - [ ] 存储方案：复用 app_settings KV 或 conversations 表扩展字段
 
-L3 自我变化追踪（Self-Evolution）
-  └─ 检测 self_memories 中的矛盾/演变信号（兴趣转移、观点变化）
-  └─ 复用已有的错误记忆纠正机制处理自我矛盾
-  └─ 变化事件记入 self_memories（memory_type=self_evolution），触发叙事更新
-
-**具体实现点**：
-
-- [ ] 新增 `backend/app/core/self_cognition.py`：SelfCognitionEngine 类
-- [ ] `build_self_narrative()`：LLM 综合 self_memories → 自我叙事段落（带缓存，30 轮或 self_memories 变化时重新生成）
-- [ ] `build_relationship_context()`：从对话统计中提取关系信号 → 结构化关系描述
-- [ ] 新增 DB：`self_narrative` 表（单例，存储当前自我叙事 + 版本号 + 触发条件）
-- [ ] 或直接用 `app_settings` KV 存储（避免新建表，简化方案）
-- [ ] 修改 `personality.py`：将自我叙事注入 prompt 核心位置（替换或补充"你记得的自己"）
-- [ ] 修改 Jinja2 模板：新增"你是谁"段落，放在人格描述之后
-- [ ] LLM 综合 prompt：给出 self_memories + 对话统计 + 关系信息 → 输出自我叙事 + 关系认知
-- [ ] 叙事更新频率：self_memories 数量变化 ≥ 5 条时触发重新综合（不是固定轮次）
+L3 自我变化追踪（Self-Evolution）待实现
+  └─ 检测 self_memories 中的矛盾/演变信号
+  └─ 复用错误记忆纠正机制
+  - [ ] 新增 memory_type=self_evolution 记录变化事件
+  - [ ] 变化事件触发自我叙事重新生成
+  - [ ] 检测兴趣转移、观点变化的 LLM prompt
+```
 
 ---
 
@@ -254,6 +267,7 @@ conversations ──┬── 1:N ── messages
 messages ──────── 1:N ── memories (source_message)
 personality_config (singleton)
 yuqing_mood (singleton)
-app_settings (KV)
+app_settings (KV) — 含 self_narrative / knowledge 检索时间戳
 user_preferences (KV with confidence)
+knowledge_items (独立表，带 expires_at 时效性)
 ```

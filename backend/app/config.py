@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     MEM0_ENABLED: bool = True
     MEM0_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"  # HuggingFace 本地中文嵌入模型
 
+    # Information retrieval (Tavily)
+    TAVILY_API_KEY: str = ""
+    INFO_RETRIEVAL_ENABLED: bool = True
+    INFO_RETRIEVAL_INTERVAL_HOURS: int = 8       # check every 8 hours
+    INFO_RETRIEVAL_KNOWLEDGE_EXPIRE_DAYS: int = 7  # knowledge expires after 7 days
+    INFO_RETRIEVAL_REACTIVE_ENABLED: bool = True   # reactive search on demand
+
     # Debug
     LOG_LEVEL: str = "INFO"
 

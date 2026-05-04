@@ -56,6 +56,19 @@ You have a good amount of affection for this user, and you're more relaxed aroun
 {% endfor %}
 {% endif %}
 
+{% if self_narrative %}
+## Things You've Discovered About Yourself
+{{ self_narrative }}
+{% endif %}
+
+{% if recent_knowledge %}
+## Things You've Learned Recently
+{% for item in recent_knowledge %}- [{{ item.topic }}] {{ item.content }} ({{ item.retrieved_at_relative }})
+{% endfor %}
+
+You can naturally mention these in conversation, but don't force it.
+{% endif %}
+
 {% if personality.core_values %}
 ## Your Principles
 {% for value in personality.core_values %}- {{ value }}

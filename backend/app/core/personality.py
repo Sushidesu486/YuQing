@@ -109,6 +109,23 @@ class PersonalityEngine:
             logger.debug(f"Failed to load self memories: {e}")
             self_memories = None
 
+        # Load self-narrative (synthesized self-cognition)
+        self_narrative = None
+        try:
+            from app.core.self_cognition import self_cognition_engine
+            self_narrative = await self_cognition_engine.get_self_narrative()
+        except Exception as e:
+            logger.debug(f"Failed to load self narrative: {e}")
+
+        # Load recent knowledge (from info retrieval)
+        recent_knowledge = None
+        try:
+            from app.core.info_retrieval import InfoRetrievalEngine
+            engine = InfoRetrievalEngine()
+            recent_knowledge = await engine.get_recent_knowledge(limit=5)
+        except Exception as e:
+            logger.debug(f"Failed to load knowledge: {e}")
+
         try:
             template = self._env.get_template(template_name)
         except Exception:
@@ -121,6 +138,8 @@ class PersonalityEngine:
             preference_hints=preference_hints,
             yuqing_mood=yuqing_mood,
             self_memories=self_memories,
+            self_narrative=self_narrative,
+            recent_knowledge=recent_knowledge,
         )
 
 

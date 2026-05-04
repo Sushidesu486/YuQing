@@ -92,6 +92,23 @@ class CognitiveProcessor:
             except Exception as e:
                 logger.debug(f"Failed to touch memory {mem.get('id')}: {e}")
 
+        # --- Phase 3.5: Reactive info retrieval ---
+        reactive_knowledge = None
+        if settings.INFO_RETRIEVAL_REACTIVE_ENABLED and settings.TAVILY_API_KEY:
+            try:
+                from app.core.info_retrieval import InfoRetrievalEngine
+                engine = InfoRetrievalEngine()
+                reactive_knowledge = await engine.reactive_retrieval(
+                    conversation_id, user_message
+                )
+                if reactive_knowledge:
+                    yield {"event": "knowledge", "data": json.dumps({
+                        "type": "knowledge_retrieved",
+                        "count": len(reactive_knowledge),
+                    }, ensure_ascii=True)}
+            except Exception as e:
+                logger.debug(f"Reactive retrieval skipped: {e}")
+
         # --- Phase 4: Build system prompt ---
         system_prompt = await personality_engine.build_system_prompt(
             language=language,
@@ -117,6 +134,17 @@ class CognitiveProcessor:
 
         # --- Phase 6: Load recent messages for context (includes the just-stored user message) ---
         messages = [{"role": "system", "content": system_prompt}]
+
+        # Inject reactive knowledge as system context
+        if reactive_knowledge:
+            knowledge_text = "\n".join(
+                f"- [{k['topic']}] {k['content']}" for k in reactive_knowledge
+            )
+            messages.append({
+                "role": "system",
+                "content": f"你刚刚查到了以下信息，可以在回复中自然地引用：\n{knowledge_text}",
+            })
+
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
@@ -189,6 +217,14 @@ class CognitiveProcessor:
                 await memory_manager.consolidate_self_memories()
         except Exception as e:
             logger.debug(f"Memory consolidation skipped: {e}")
+
+        # Self-narrative update (check if regeneration needed, every 10 messages)
+        try:
+            if msg_count % 10 == 0:
+                from app.core.self_cognition import self_cognition_engine
+                await self_cognition_engine.check_and_update()
+        except Exception as e:
+            logger.debug(f"Self-narrative update skipped: {e}")
 
         # Save emotion snapshot
         if user_emotion:

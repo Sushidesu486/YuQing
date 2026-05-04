@@ -40,10 +40,11 @@
 │  Phase 2:  用户当前情绪状态                                    │
 │  Phase 2.5: 语晴自身心情更新                                   │
 │  Phase 3:  分层记忆召回 (mem0 + MySQL)                        │
+│  Phase 3.5: 被动信息检索 (Tavily，按需触发)                    │
 │  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成              │
 │             用户消息按行拆分存储，合并文本用于记忆提取          │
-│  Phase 9:  记忆分类提取 / 记忆衰减 / 巩固 / 自我记忆 / 偏好学习 │
+│  Phase 9:  记忆提取 / 纠正 / 衰减 / 巩固 / 自我叙事 / 偏好   │
 │                                                              │
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
 │  │Personality │ │  Memory  │ │ Emotion  │ │  YuQing Mood  │   │
@@ -52,10 +53,16 @@
 │  └───────────┘ └──────────┘ └──────────┘ └───────────────┘   │
 │                                                              │
 │  ┌───────────────┐ ┌──────────────┐ ┌────────────────────┐  │
-│  │    Proactive   │ │ Preference  │ │      LLM           │  │
-│  │    Manager     │ │  Learner    │ │  (litellm 统一接口) │  │
-│  │ 4种触发器+后台  │ │ 5维偏好学习 │ │ DeepSeek/GLM/etc  │  │
+│  │    Proactive   │ │  SelfCog     │ │  InfoRetrieval    │  │
+│  │    Manager     │ │  Engine      │ │  (Tavily API)     │  │
+│  │ 4种触发器+后台  │ │ 自我叙事合成  │ │ 主动+被动检索     │  │
 │  └───────────────┘ └──────────────┘ └────────────────────┘  │
+│                                                              │
+│  ┌──────────────┐ ┌────────────────────┐                     │
+│  │ Preference   │ │      LLM           │                    │
+│  │  Learner     │ │  (litellm 统一接口) │                    │
+│  │ 5维偏好学习   │ │ DeepSeek/GLM/etc  │                     │
+│  └──────────────┘ └────────────────────┘                     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,7 +88,7 @@
 
 ---
 
-## 六大核心能力
+## 七大核心能力
 
 ### 1. 记忆系统
 
@@ -131,12 +138,14 @@
 **记忆提取流程**
 
 ```
-对话内容 → LLM 一次性提取两类记忆（零额外 API 调用）
+对话内容 → LLM 一次性提取三类信息（零额外 API 调用）
          ├─ 用户记忆（7 种类型 + valence + confidence）
          │    → MySQL memories 表 → mem0.add(infer=False) → ChromaDB
-         └─ 自我记忆（4 种类型 + importance）
-              → embedding 语义去重（bge cosine similarity）
-              → MySQL self_memories 表
+         ├─ 自我记忆（4 种类型 + importance）
+         │    → embedding 语义去重（bge cosine similarity）
+         │    → MySQL self_memories 表
+         └─ 纠正检测（corrections）
+              → 标记旧记忆 is_invalid=1 → 插入正确版本
 ```
 
 **记忆召回**
@@ -241,6 +250,37 @@
 - 置信度采用加权移动平均递增
 - 置信度 >= 0.5 的偏好注入 system prompt
 
+### 6. 自我认知系统（SelfCognitionEngine）
+
+语晴不只是被动收集碎片化的自我记忆，还能将它们合成为连贯的自我叙事：
+
+**自我叙事合成**
+- 将零散 self_memories + YAML 性格 traits 综合为 3-5 句第一人称叙事
+- LLM prompt 包含性格维度数值，确保叙事风格一致（warmth 0.45 不会写出热情奔放的风格）
+- 缓存到 app_settings，self_memories 变化 ≥ 5 条时重新生成
+- 注入 system prompt「你发现自己的一些事」区块
+
+**设计原则**：YAML 静态骨架（不可变）+ 自我叙事（动态补充）共存，不冲突。
+
+### 7. 信息检索系统（InfoRetrievalEngine）
+
+语晴能主动了解外部世界，不只是依赖对话学习：
+
+**主动检索**
+- 后台任务每 8 小时按 YuQing 兴趣自动搜索新闻（ACG、AI/HPC、音乐等）
+- Tavily API 搜索 → LLM 第一人称总结 → 存入 knowledge_items 表
+- 每个兴趣独立频率控制，避免重复搜索
+
+**被动检索**
+- 对话中 LLM 判断用户消息是否涉及时事/新闻/新动态
+- 需要时实时搜索 Tavily，结果注入 messages context
+- 语晴可在回复中自然引用刚查到的信息
+
+**时效性管理**
+- 知识 7 天后自动过期（expires_at）
+- 过期知识不再注入 system prompt
+- 存储在独立 knowledge_items 表，与记忆系统分离
+
 ---
 
 ## 快速开始
@@ -327,6 +367,8 @@ yuqing/
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
+│       │   ├── self_cognition.py     # SelfCognitionEngine — 自我认知（叙事合成）
+│       │   ├── info_retrieval.py     # InfoRetrievalEngine — 信息检索（Tavily）
 │       │   ├── preferences.py        # PreferenceLearner — 用户偏好学习
 │       │   ├── proactive.py          # ProactiveManager — 主动消息系统
 │       │   └── llm.py                # litellm 封装（流式/非流式）
@@ -379,8 +421,9 @@ yuqing/
 | `yuqing_mood_log` | 语晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |
 | `personality_config` | 人格配置（JSON，单例） |
-| `app_settings` | 应用设置（KV） |
+| `app_settings` | 应用设置（KV）— 含自我叙事缓存、检索时间戳 |
 | `user_preferences` | 用户学习到的偏好 |
+| `knowledge_items` | 信息检索知识条目（带时效性，7 天过期） |
 
 ---
 
@@ -424,6 +467,16 @@ yuqing/
 | `YUQING_MOOD_BASELINE_OPENNESS` | 0.45 | 敞开度基线 |
 | `YUQING_MOOD_BASELINE_ENERGY` | 0.45 | 能量基线 |
 
+### 信息检索参数（.env）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `TAVILY_API_KEY` | (空) | Tavily API Key（去 tavily.com 免费注册） |
+| `INFO_RETRIEVAL_ENABLED` | true | 是否启用信息检索 |
+| `INFO_RETRIEVAL_INTERVAL_HOURS` | 8 | 主动检索间隔（小时） |
+| `INFO_RETRIEVAL_KNOWLEDGE_EXPIRE_DAYS` | 7 | 知识过期天数 |
+| `INFO_RETRIEVAL_REACTIVE_ENABLED` | true | 是否启用被动检索 |
+
 ---
 
 ## API 接口
@@ -444,6 +497,8 @@ yuqing/
 | GET | `/api/memories` | 所有长期记忆 |
 | GET | `/api/memories/search?q=xxx` | 语义搜索记忆 |
 | DELETE | `/api/memories/{id}` | 删除记忆 |
+| POST | `/api/memories/trigger-info-retrieval` | 手动触发信息检索（调试用） |
+| GET | `/api/knowledge` | 查看当前未过期的知识条目 |
 
 ### 情绪与心情
 

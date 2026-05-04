@@ -67,6 +67,9 @@ export function useChat() {
     sendingRef.current = true;
     pendingRef.current = [];
 
+    // Show typing indicator only when actually flushing (packing and sending)
+    setIsTyping(true);
+
     // Add assistant placeholder (empty content — MessageBubble won't render it)
     setMessages((prev) => [...prev, { id: PLACEHOLDER_ID, role: 'assistant' as const, content: '' }]);
 
@@ -224,9 +227,6 @@ export function useChat() {
       if (cooldownTimerRef.current) {
         clearTimeout(cooldownTimerRef.current);
       }
-
-      // Show typing indicator during cooldown
-      setIsTyping(true);
 
       // Flush after cooldown
       cooldownTimerRef.current = setTimeout(() => {

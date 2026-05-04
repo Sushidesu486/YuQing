@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS self_memories (
     INDEX idx_type_importance (memory_type, importance),
     INDEX idx_consolidated (is_consolidated)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id CHAR(32) PRIMARY KEY,
+    topic VARCHAR(128) NOT NULL,
+    content TEXT NOT NULL,
+    source_url VARCHAR(512) DEFAULT NULL,
+    retrieved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    is_valid TINYINT NOT NULL DEFAULT 1,
+    source_type ENUM('proactive', 'reactive') DEFAULT 'proactive',
+    INDEX idx_topic_valid (topic, is_valid),
+    INDEX idx_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
