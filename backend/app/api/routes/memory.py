@@ -76,7 +76,7 @@ class DebugRecallRequest(BaseModel):
 async def debug_recall(req: DebugRecallRequest):
     """调试接口：传入消息内容，返回完整的记忆召回链路。
 
-    返回每个阶段（mem0 搜索 → pinned facts → 激活传播 → 休眠记忆 → 最终排序）的详情，
+    返回每个阶段（语义搜索 → pinned facts → 激活传播 → 休眠记忆 → 最终排序）的详情，
     包括每条记忆的来源、语义相似度、激活值、综合评分。
     """
     return await memory_manager.debug_recall(
@@ -87,12 +87,11 @@ async def debug_recall(req: DebugRecallRequest):
 
 @router.get("/memories/debug/stats")
 async def memory_stats():
-    """查看记忆系统状态概览：mem0 开关、去重状态、记忆总数、链接数、各类记忆分布。"""
+    """查看记忆系统状态概览：去重状态、记忆总数、链接数、各类记忆分布。"""
     from app.config import settings as cfg
     from app.db.database import get_pool
     pool = await get_pool()
     stats = {
-        "mem0_enabled": cfg.MEM0_ENABLED,
         "memory_link_enabled": cfg.MEMORY_LINK_ENABLED,
         "dedup_enabled": cfg.MEMORY_DEDUP_ENABLED,
         "sleep_cleanup_enabled": cfg.MEMORY_SLEEP_CLEANUP_ENABLED,
@@ -134,5 +133,5 @@ async def memory_stats():
 
 @router.post("/memories/debug/cleanup")
 async def manual_cleanup():
-    """手动触发一次睡眠清理（调试用）。清理 ChromaDB 孤儿 + 聚类合并。"""
+    """手动触发一次睡眠清理（调试用）。聚类合并相似记忆。"""
     return await memory_manager.sleep_cleanup()

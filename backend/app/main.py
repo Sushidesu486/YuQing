@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
-from app.core.memory import init_mem0, sync_memories_to_mem0
+from app.core.memory import _get_embedding_model
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task
@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting YuQing...")
     await init_db()
-    init_mem0()
-    await sync_memories_to_mem0()
-    logger.info("Database and mem0 ready")
+    _get_embedding_model()  # Pre-load embedding model
+    logger.info("Database and embedding model ready")
 
     # Start proactive background task
     task = asyncio.create_task(proactive_background_task())

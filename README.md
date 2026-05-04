@@ -39,7 +39,7 @@
 │  Phase 1:  用户情绪分析 (V-A 模型)                             │
 │  Phase 2:  用户当前情绪状态                                    │
 │  Phase 2.5: 语晴自身心情更新                                   │
-│  Phase 3:  分层记忆召回 (mem0 + MySQL)                        │
+│  Phase 3:  分层记忆召回 (BGE + MySQL)                       │
 │  Phase 3.5: 被动信息检索 (Tavily，按需触发)                    │
 │  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成              │
@@ -49,7 +49,7 @@
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
 │  │Personality │ │  Memory  │ │ Emotion  │ │  YuQing Mood  │   │
 │  │  Engine    │ │ Manager  │ │Regulator │ │   Tracker     │   │
-│  │ YAML+Jinja │ │mem0+MySQL│ │ V-A LLM  │ │  EMA + 关键词 │   │
+│  │ YAML+Jinja │ │MySQL+BGE │ │ V-A LLM  │ │  EMA + 关键词 │   │
 │  └───────────┘ └──────────┘ └──────────┘ └───────────────┘   │
 │                                                              │
 │  ┌───────────────┐ ┌──────────────┐ ┌────────────────────┐  │
@@ -72,7 +72,7 @@
 |------|------|------|
 | Web 框架 | **FastAPI** (Python, async) | 异步，高性能 |
 | 数据库 | **MySQL 9** | 结构化数据持久化 |
-| 记忆引擎 | **mem0 v2** + ChromaDB | 向量存储 + 语义检索 + 中文嵌入 |
+| 记忆引擎 | **MySQL** + BGE-small-zh-v1.5 | 语义检索 + 分层注入 + 激活传播 |
 | 嵌入模型 | **BAAI/bge-small-zh-v1.5** | 本地中文向量嵌入（512维，无需额外 API） |
 | LLM 接口 | **litellm** | 一套代码切换多家 API |
 | 模板引擎 | **Jinja2** | 动态生成 system prompt |
@@ -140,7 +140,7 @@
 ```
 对话内容 → LLM 一次性提取三类信息（零额外 API 调用）
          ├─ 用户记忆（7 种类型 + valence + confidence）
-         │    → MySQL memories 表 → mem0.add(infer=False) → ChromaDB
+         │    → MySQL memories 表 → BGE embedding 语义搜索
          ├─ 自我记忆（4 种类型 + importance）
          │    → embedding 语义去重（bge cosine similarity）
          │    → MySQL self_memories 表
@@ -149,7 +149,7 @@
 ```
 
 **记忆召回**
-- 每次收到新消息，mem0 混合检索（语义相似度）召回最相关的记忆
+- 每次收到新消息，BGE embedding 语义检索（cosine similarity）召回最相关的记忆
 - **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），联想扩散到相关记忆
 - **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2，替代纯语义排序
 - 按类型分流到三个注入层
@@ -158,7 +158,7 @@
 **记忆关联网络（Memory Graph）**
 - 同轮提取的记忆自动建链（co-occurrence，strength=0.7）
 - 记忆合并/纠正时继承链接（strength × 0.8 衰减）
-- MySQL fallback 改用本地 bge embedding 语义搜索
+- BGE-small-zh-v1.5 本地语义搜索（cosine similarity，200 候选 → 批量 encode → 排序）
 - 详见 [docs/memory-graph.md](docs/memory-graph.md)
 
 **记忆生命周期**
@@ -167,8 +167,8 @@
 - **休眠唤醒**：30 天未召回但语义相关的记忆会被主动消息系统重新激活
 - **自我记忆去重**：本地 bge embedding 语义去重（相似度 > 0.85 跳过，0.6-0.85 强化已有记忆）
 - **自我记忆合并**：embedding 聚类（> 0.75 归一组）+ LLM 合并 ≥ 3 条相似自我记忆为精炼总结
-- **写入去重**：新记忆写入前 bge embedding 比对已有记忆（> 0.90 跳过，0.75-0.90 LLM 合并），mem0 ChromaDB 也做 pre-check
-- **睡眠清理**：每天凌晨 4 点自动清理 ChromaDB 孤儿 + 同类型聚类合并（≥ 0.70 阈值）
+- **写入去重**：新记忆写入前 bge embedding 比对已有记忆（> 0.90 跳过，0.75-0.90 LLM 合并）
+- **睡眠清理**：每天凌晨 4 点自动聚类合并（≥ 0.70 阈值）
 - 详见 [docs/memory-graph.md](docs/memory-graph.md)、[docs/memory-debug-panel.md](docs/memory-debug-panel.md)
 
 ### 2. 情感系统（用户情绪感知）
@@ -374,7 +374,7 @@ yuqing/
 │       ├── config.py                 # 配置管理（pydantic-settings）
 │       ├── core/
 │       │   ├── cognitive.py          # CognitiveProcessor — 认知处理器（总编排）
-│       │   ├── memory.py             # MemoryManager — 分层记忆系统（mem0+MySQL）
+│       │   ├── memory.py             # MemoryManager — 分层记忆系统（BGE+MySQL）
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
@@ -415,7 +415,7 @@ yuqing/
 │       ├── services/api.ts           # API 请求封装
 │       ├── types/index.ts            # TypeScript 类型定义
 │       └── i18n/                     # 中英文翻译
-├── data/chroma_db/                   # ChromaDB 持久化存储
+├── data/                            # 运行时数据
 └── docs/
     └── memory-report.md              # 记忆系统技术报告
 ```
@@ -451,8 +451,7 @@ yuqing/
 | `MEMORY_DECAY_HALF_LIFE_DAYS` | 90 | 记忆重要性减半天数 |
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
-| `MEM0_ENABLED` | true | 是否启用 mem0 记忆引擎 |
-| `MEM0_EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，512维） |
+| `EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，512维） |
 | `MEMORY_FACT_TOP_K` | 6 | 显式注入的事实/事件条数上限 |
 | `MEMORY_BEHAVIOR_RULES_MAX` | 8 | 行为规则最大条数 |
 | `MEMORY_EPISODIC_MAX` | 3 | 情景记忆最大条数 |
@@ -521,7 +520,7 @@ yuqing/
 | GET | `/api/memories` | 所有长期记忆 |
 | GET | `/api/memories/search?q=xxx` | 语义搜索记忆 |
 | DELETE | `/api/memories/{id}` | 删除记忆 |
-| POST | `/api/memories/debug/recall` | 调试：传入消息，返回完整召回链路（mem0 → 激活传播 → 最终排序） |
+| POST | `/api/memories/debug/recall` | 调试：传入消息，返回完整召回链路（语义搜索 → 激活传播 → 最终排序） |
 | GET | `/api/memories/debug/stats` | 调试：记忆系统状态概览（总数、链接数、类型分布） |
 | POST | `/api/memories/debug/cleanup` | 手动触发睡眠清理 |
 | GET | `/api/memories/links` | 所有记忆关联链接（调试面板用） |
@@ -572,8 +571,7 @@ yuqing/
 | **定位** | 研究/教育平台完整认知架构 | 个人情感 AI 伙伴 |
 | **LLM** | 仅 OpenAI GPT-4 | 多模型支持（litellm） |
 | **数据库** | SQLite | MySQL 9（生产级） |
-| **向量检索** | 未内置 | mem0 + ChromaDB + BGE 中文嵌入 |
-| **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
+| **向量检索** | 未内置 | MySQL + BGE-small-zh-v1.5 本地语义搜索 || **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
 | **用户系统** | 多用户注册 | 单用户，无认证 |
 | **情绪系统** | 12 类关键词检测 + 心理健康追踪 | V-A 模型 + LLM 分析 + 语晴自身心情 |
 | **主动行为** | 无 | 4 种触发器 + 后台任务 + SSE 推送 |
@@ -584,7 +582,6 @@ yuqing/
 ## 致谢
 
 - [Project Neuro](https://github.com/litmajor/Project-Neuro) — 情感智能架构灵感
-- [Mem0](https://mem0.ai) — Agent Memory 前沿实践
+- [Mem0](https://mem0.ai) — Agent Memory 前沿实践（早期参考，已替换为本地 BGE + MySQL）
 - [litellm](https://github.com/BerriAI/litellm) — 统一 LLM 调用接口
-- [ChromaDB](https://www.trychroma.com/) — 轻量级向量数据库
 - 《狼与香辛料》赫萝 — 语晴人格灵感来源

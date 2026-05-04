@@ -21,9 +21,6 @@ class Settings(BaseSettings):
     MYSQL_PASSWORD: str = ""
     MYSQL_DATABASE: str = "yuqing"
 
-    # ChromaDB
-    CHROMA_PATH: str = "data/chroma_db"
-
     # Application
     LANGUAGE: str = "zh"
     MAX_CONTEXT_MESSAGES: int = 20
@@ -68,9 +65,8 @@ class Settings(BaseSettings):
     YUQING_MOOD_BASELINE_OPENNESS: float = 0.45
     YUQING_MOOD_BASELINE_ENERGY: float = 0.45
 
-    # mem0
-    MEM0_ENABLED: bool = True
-    MEM0_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"  # HuggingFace 本地中文嵌入模型
+    # Embedding model (local BGE for semantic search)
+    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
 
     # Information retrieval (Tavily)
     TAVILY_API_KEY: str = ""
@@ -100,7 +96,6 @@ class Settings(BaseSettings):
     # Sleep cleanup (daily automatic memory maintenance)
     MEMORY_SLEEP_CLEANUP_ENABLED: bool = True
     MEMORY_SLEEP_CLEANUP_HOUR: int = 4                 # 凌晨 4 点执行（模拟睡眠）
-    MEMORY_SLEEP_CLEANUP_ORPHAN_REMOVAL: bool = True   # 清理 ChromaDB 孤儿条目
     MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE: bool = True    # 对聚类相似记忆做 LLM 合并
     MEMORY_SLEEP_CLEANUP_CLUSTER_THRESHOLD: float = 0.70  # 聚类合并相似度阈值
 
@@ -115,15 +110,9 @@ class Settings(BaseSettings):
             "?charset=utf8mb4"
         )
 
-    @property
-    def chroma_abs_path(self) -> str:
-        p = Path(self.CHROMA_PATH)
-        if not p.is_absolute():
-            return str(_PROJECT_ROOT / p)
-        return self.CHROMA_PATH
-
     class Config:
         env_file = str(_PROJECT_ROOT / ".env")
+        extra = "ignore"
         env_file_encoding = "utf-8"
 
 

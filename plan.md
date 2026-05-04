@@ -25,14 +25,14 @@
 - [x] 硬格式约束禁止 "..." 输出 + 前端三层清理（prompt 约束 / EMPTY_RESPONSES 过滤 / done 事件段落清洗）
 
 ### 记忆系统（MemoryManager）
-- [x] 多层记忆架构：工作记忆（20 条上下文）+ 长期记忆（MySQL + mem0 + ChromaDB）
+- [x] 多层记忆架构：工作记忆（20 条上下文）+ 长期记忆（MySQL + BGE 语义搜索）
 - [x] 7 种用户记忆类型：fact / event / episodic / emotion / preference / procedural
 - [x] 4 种自我记忆类型：self_interest / self_experience / self_opinion / self_habit
 - [x] 分层注入机制：显式层（fact+event）→ 情感层（episodic）→ 行为层（preference/procedural）
-- [x] mem0 v2 集成（infer=False 适配不支持 function calling 的模型）
+- [x] mem0 v2 集成（后移除，改为本地 BGE + MySQL）
 - [x] 本地中文嵌入模型 BAAI/bge-small-zh-v1.5（512 维，无需额外 API）
 - [x] 自动记忆提取：LLM 分类（7 种类型 + valence + confidence）→ MySQL + ChromaDB
-- [x] 语义召回：mem0 混合检索 + MySQL 补充（mem0 返回不足时补充高重要性记忆）
+- [x] 语义召回：BGE embedding cosine similarity 搜索（200 候选 → 批量 encode → 排序）
 - [x] Pinned facts 保障：importance >= 0.8 的记忆强制注入，不参与排序竞争
 - [x] 记忆衰减：90 天半衰期，未被访问的记忆重要性逐渐降低
 - [x] 记忆巩固：每 20 轮合并相关记忆，压缩冗余
@@ -40,11 +40,11 @@
 - [x] Self-memory LLM 提取：搭便车现有记忆提取 LLM 调用（零额外 API 开销），4 种细分类别（self_interest/self_experience/self_opinion/self_habit）
 - [x] Self-memory embedding 语义去重：本地 bge cosine similarity（>0.85 跳过，0.6-0.85 强化已有 memory）
 - [x] Self-memory 定期合并：embedding 聚类（> 0.75）+ LLM 合并 ≥ 3 条相似自我记忆，is_consolidated 标记
-- [x] mem0 全量同步：启动时同步所有 MySQL 记忆到 mem0（包括 consolidated），完整 metadata（type/valence/confidence），排除 None 值
-- [x] mem0 同步防重复：`mem0_sync_done` 标志位防止 `--reload` 重启重复同步
+- [x] mem0 全量同步：已移除 mem0，不再需要同步
 - [x] 记忆关联网络（Memory Graph）：co_occurrence 建链 + 合并/纠正继承 + 激活传播扩散召回
 - [x] Triple Hybrid Scoring：语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2
-- [x] 写入去重：bge embedding 比对（> 0.90 跳过，0.75-0.90 LLM 合并）+ mem0 ChromaDB pre-check
+- [x] 移除 mem0 + ChromaDB：统一为 MySQL + 本地 BGE 语义搜索，消除 ID 脱节，激活传播恢复正常
+- [x] 写入去重：bge embedding 比对（> 0.90 跳过，0.75-0.90 LLM 合并）
 - [x] 睡眠清理：每天凌晨 4 点自动清理 ChromaDB 孤儿 + 同类型聚类合并
 - [x] 错误记忆纠正：LLM 检测用户信息与已有记忆矛盾，旧记忆标记 is_invalid，正确版本插入
 - [x] 失效记忆过滤：所有记忆召回查询排除 is_invalid=1 的记忆
@@ -136,12 +136,10 @@
 - [x] `proactive`：`check_absence`、`check_time_of_day` 缺少 `conversation_id` 过滤
 - [x] `cognitive.py`：返场检测查询缺少 `conversation_id` 过滤
 - [x] `memories`：`extract_and_store_memories`、`consolidate_memories` INSERT 缺少 `source_conversation_id`
-- [x] mem0 同步：`sync_memories_to_mem0` 过滤 `is_consolidated=0` 导致大部分记忆未同步
-- [x] mem0 metadata：None 值导致 TypeError，修复为排除 None 字段
+- [x] mem0 移除：去掉 mem0 + ChromaDB，统一为 MySQL + 本地 BGE 语义搜索（消除 ID 脱节，激活传播恢复正常）
 - [x] 前端 SSE：chunk 边界分割导致 done 事件 JSON 解析失败（行缓冲修复）
 - [x] 前端 fallback handler：双重展开导致 cleaned 内容被 fullContent 覆盖
 - [x] 信息检索 hash 去重：Python `hash()` 跨进程不稳定导致重启后重复检索，改用 `hashlib.md5`
-- [x] mem0 metadata content 截断：bge-small-zh-v1.5 512 token 限制（~300 中文字），merge prompt 添加长度约束
 
 ### 文档
 - [x] README.md：完整架构说明 + 快速开始 + API 接口 + 配置参考
@@ -174,7 +172,7 @@
 
 当前记忆是扁平孤岛：每条记忆独立存储和召回，没有关联。人类记忆是网络结构——想起一条自动联想到相关条。
 
-**根因**：mem0 v2.0.0 开源包不支持 `add_relation()`（那是平台付费 API），需要自建关联系统。
+**根因**：mem0 v2.0.0 开源包不支持 `add_relation()`（那是平台付费 API），需要自建关联系统。已完成（后移除 mem0，统一为 MySQL + BGE）。
 
 **核心改动**：
 

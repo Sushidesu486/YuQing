@@ -1,12 +1,9 @@
 import json
 import logging
 import math
-import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
-
-from mem0 import Memory
 
 import aiomysql
 
@@ -15,7 +12,7 @@ from app.db.database import get_pool, _generate_id
 
 logger = logging.getLogger(__name__)
 
-# ── mem0 fallback prompts (used only when MEM0_ENABLED=False) ──
+# ── LLM extraction prompts ──
 
 MEMORY_CLASSIFY_PROMPT_ZH = """分析以下对话，提取信息并检测记忆矛盾。
 
@@ -165,48 +162,7 @@ _BEHAVIOR_RULE_PATTERNS = [
     (r"不喜欢?[\s\S]*?(?:被忽视|不被在意|不关心)", "要表现出你在关注用户说的话"),
 ]
 
-# ── mem0 singleton ──
-
-_mem0_client: Optional[Memory] = None
-_MEM0_USER_ID = "default"
-
-
-def _get_mem0() -> Memory:
-    global _mem0_client
-    if _mem0_client is None:
-        config = {
-            "llm": {
-                "provider": "litellm",
-                "config": {
-                    "model": settings.LITELLM_MODEL,
-                    "api_key": settings.LITELLM_API_KEY,
-                    "temperature": 0.1,
-                },
-            },
-            "vector_store": {
-                "provider": "chroma",
-                "config": {
-                    "collection_name": "long_term_memory",
-                    "path": settings.chroma_abs_path,
-                },
-            },
-            "embedder": {
-                "provider": "huggingface",
-                "config": {
-                    "model": settings.MEM0_EMBEDDING_MODEL or "BAAI/bge-small-zh-v1.5",
-                },
-            },
-        }
-        if settings.LITELLM_API_BASE:
-            os.environ["LITELLM_API_BASE"] = settings.LITELLM_API_BASE
-            os.environ["OPENAI_API_BASE"] = settings.LITELLM_API_BASE
-
-        _mem0_client = Memory.from_config(config)
-        logger.info("mem0 Memory client initialized")
-    return _mem0_client
-
-
-# ── Embedding model singleton (for self-memory dedup/consolidation) ──
+# ── Embedding model singleton ──
 
 _embedding_model = None
 _self_mem_embedding_cache: dict[str, list] = {}  # {content: embedding_vector}
@@ -225,7 +181,7 @@ def _get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         from sentence_transformers import SentenceTransformer
-        model_name = settings.MEM0_EMBEDDING_MODEL or "BAAI/bge-small-zh-v1.5"
+        model_name = settings.EMBEDDING_MODEL
         _embedding_model = SentenceTransformer(model_name)
         logger.info(f"Embedding model loaded: {model_name}")
     return _embedding_model
@@ -246,72 +202,7 @@ def _invalidate_self_mem_cache():
     _self_mem_cache_valid = False
 
 
-def init_mem0():
-    """Initialize mem0 client (call during startup)."""
-    _get_mem0()
 
-
-async def sync_memories_to_mem0():
-    """Sync ALL MySQL memories to mem0 vector store.
-    Called once at startup. Uses app_settings to track whether sync has already been done,
-    avoiding duplicates caused by --reload restarts."""
-    pool = await get_pool()
-
-    # Check if sync was already done (survives restarts but not DB resets)
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT value FROM app_settings WHERE `key` = 'mem0_sync_done'"
-            )
-            row = await cur.fetchone()
-            if row:
-                logger.info("mem0 sync already done (skipping)")
-                return
-
-    async with pool.acquire() as conn:
-        async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute(
-                "SELECT id, content, category, memory_type, importance, "
-                "valence, confidence FROM memories WHERE is_invalid = 0 ORDER BY importance DESC"
-            )
-            rows = await cur.fetchall()
-
-    if not rows:
-        return
-
-    mem0 = _get_mem0()
-    synced = 0
-    for row in rows:
-        try:
-            metadata = {
-                "category": row["category"] or "fact",
-                "memory_type": row.get("memory_type") or row["category"] or "fact",
-                "importance": float(row["importance"] or 0.5),
-                "confidence": float(row.get("confidence") or 0.5),
-            }
-            valence = row.get("valence")
-            if valence is not None:
-                metadata["valence"] = float(valence)
-            mem0.add(
-                row["content"],
-                user_id=_MEM0_USER_ID,
-                metadata=metadata,
-                infer=False,
-            )
-            synced += 1
-        except Exception as e:
-            logger.warning(f"Failed to sync memory {row['id']}: {e}")
-
-    # Mark sync as done
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO app_settings (`key`, value) VALUES ('mem0_sync_done', '1') "
-                "ON DUPLICATE KEY UPDATE value = '1'"
-            )
-
-    if synced:
-        logger.info(f"Synced {synced} existing memories to mem0 vector store")
 
 
 def _time_ago(dt: datetime) -> str:
@@ -393,7 +284,7 @@ class MemoryManager:
         for row in reversed(rows):
             messages_context.append({"role": row["role"], "content": row["content"]})
 
-        # 2. Search memories via mem0 or MySQL fallback (expanded to top_k=10)
+        # 2. Search memories via bge embedding (top_k=10)
         recalled = await self.search_memories(user_message, top_k=10)
 
         # 3. Ensure pinned facts (importance >= 0.8) are always included
@@ -449,8 +340,7 @@ class MemoryManager:
         Returns:
             {
                 "query": str,
-                "mem0_enabled": bool,
-                "stage_mem0": list,           # mem0 直接命中
+                "stage_semantic_search": list,  # semantic search hits
                 "stage_pinned": list,         # pinned facts
                 "stage_activation_spread": {  # 激活传播详情
                     "enabled": bool,
@@ -477,22 +367,8 @@ class MemoryManager:
                 await cur.execute("SELECT COUNT(*) FROM memory_links")
                 total_links = (await cur.fetchone())[0]
 
-        # Stage 1: mem0 search
-        mem0_results = []
-        if cfg.MEM0_ENABLED:
-            try:
-                mem0_results = await self._search_via_mem0(query, top_k=10)
-                if len(mem0_results) < 10:
-                    mysql_supplement = await self._search_via_mysql(query, top_k=10)
-                    existing_ids = {r["id"] for r in mem0_results}
-                    for r in mysql_supplement:
-                        if r["id"] not in existing_ids:
-                            r["_source"] = "mysql_fallback"
-                            mem0_results.append(r)
-            except Exception as e:
-                mem0_results = []
-        else:
-            mem0_results = await self._search_via_mysql(query, top_k=10)
+        # Stage 1: Semantic search
+        search_results = await self._search_via_mysql(query, top_k=10)
 
         # Stage 2: pinned facts
         pinned = []
@@ -506,21 +382,21 @@ class MemoryManager:
         pinned_ids = {r["id"] for r in pinned}
         pinned_clean = [
             {"id": r["id"], "content": r["content"], "memory_type": r.get("memory_type"), "importance": float(r["importance"])}
-            for r in pinned if r["id"] not in {m["id"] for m in mem0_results}
+            for r in pinned if r["id"] not in {m["id"] for m in search_results}
         ]
 
         # Stage 3: activation spread
         spread_result = {
             "enabled": cfg.MEMORY_LINK_ENABLED,
-            "seed_count": len(mem0_results),
+            "seed_count": len(search_results),
             "spread_count": 0,
             "iterations": 0,
             "spread_memories": [],
         }
         spread_memories = []
-        if cfg.MEMORY_LINK_ENABLED and mem0_results:
-            spread_memories = await self._activation_spread(mem0_results)
-            existing_ids = {r["id"] for r in mem0_results}
+        if cfg.MEMORY_LINK_ENABLED and search_results:
+            spread_memories = await self._activation_spread(search_results)
+            existing_ids = {r["id"] for r in search_results}
             for mem in spread_memories:
                 if mem["id"] not in existing_ids:
                     existing_ids.add(mem["id"])
@@ -541,11 +417,11 @@ class MemoryManager:
         dormant = []
         if conversation_id:
             dormant = await self.get_dormant_memories(query)
-            dormant_ids = {r["id"] for r in mem0_results + pinned_clean + spread_memories}
+            dormant_ids = {r["id"] for r in search_results + pinned_clean + spread_memories}
             dormant = [d for d in dormant if d["id"] not in dormant_ids]
 
         # Stage 5: final scored list
-        all_recalled = mem0_results + pinned_clean + spread_memories + dormant
+        all_recalled = search_results + pinned_clean + spread_memories + dormant
 
         def _relevance_score(mem: dict) -> float:
             semantic = 1.0 - mem.get("distance", 1.0)
@@ -567,7 +443,7 @@ class MemoryManager:
                 "content": m["content"],
                 "memory_type": m.get("metadata", {}).get("memory_type"),
                 "importance": m.get("metadata", {}).get("importance"),
-                "source": "mem0" if not m.get("_via_link") and not m.get("_is_dormant") else ("activation_spread" if m.get("_via_link") else "dormant"),
+                "source": "semantic_search" if not m.get("_via_link") and not m.get("_is_dormant") else ("activation_spread" if m.get("_via_link") else "dormant"),
                 "semantic_sim": round(1.0 - m.get("distance", 1.0), 4),
                 "activation": round(m.get("_activation", 1.0), 4),
                 "hybrid_score": m["_score"],
@@ -580,10 +456,9 @@ class MemoryManager:
 
         return {
             "query": query,
-            "mem0_enabled": cfg.MEM0_ENABLED,
-            "stage_mem0": [
-                {"id": m["id"], "content": m["content"], "score": round(1.0 - m.get("distance", 1.0), 4), "source": m.get("_source", "mem0")}
-                for m in mem0_results
+            "stage_semantic_search": [
+                {"id": m["id"], "content": m["content"], "score": round(1.0 - m.get("distance", 1.0), 4), "source": m.get("_source", "semantic_search")}
+                for m in search_results
             ],
             "stage_pinned": pinned_clean,
             "stage_activation_spread": spread_result,
@@ -603,7 +478,7 @@ class MemoryManager:
         """多轮迭代激活传播 — 基于 Synapse 论文的 Spreading Activation。
 
         算法：
-        1. 种子记忆 activation = 1 - distance（mem0 语义相似度）
+        1. 种子记忆 activation = 1 - distance（语义相似度）
         2. 加载子图（种子的一度 + 二度邻居 + 边）
         3. 迭代传播（MAX_ITERATIONS 轮）：
            - 每跳衰减：propagated = activation × strength × DECAY_RATE
@@ -958,63 +833,10 @@ class MemoryManager:
         recalled_facts: Optional[list] = None,
     ) -> list:
         """Extract memorable facts, detect contradictions, and store them."""
-        stored = []
-        if settings.MEM0_ENABLED:
-            stored = await self._extract_via_mem0(
-                conversation_id, user_message, assistant_response, language,
-                recalled_facts=recalled_facts,
-            )
-        else:
-            stored = await self._extract_via_llm(
-                conversation_id, user_message, assistant_response, language,
-                recalled_facts=recalled_facts,
-            )
-
-        return stored
-
-    async def _extract_via_mem0(
-        self,
-        conversation_id: str,
-        user_message: str,
-        assistant_response: str,
-        language: str = "zh",
-        recalled_facts: Optional[list] = None,
-    ) -> list:
-        """Extract memories using LLM classification, store in mem0 (infer=False) + MySQL.
-
-        mem0.add(infer=False) stores the raw text for vector search without using
-        function calling. Structured metadata (memory_type, valence, etc.) comes from
-        our own LLM classification via _extract_via_llm().
-        """
-        # Step 1: Use LLM to classify and extract structured memories
-        classified = await self._extract_via_llm(
+        return await self._extract_via_llm(
             conversation_id, user_message, assistant_response, language,
             recalled_facts=recalled_facts,
         )
-        if not classified:
-            return []
-
-        # Step 2: Store each classified memory in mem0 (vector store only, no infer)
-        conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
-        mem0 = _get_mem0()
-
-        for mem in classified:
-            try:
-                metadata = {
-                    "source_conversation_id": conversation_id,
-                    "memory_type": mem["memory_type"],
-                    "valence": mem.get("valence", 0.0),
-                    "importance": mem.get("importance", 0.5),
-                    "confidence": mem.get("confidence", 0.5),
-                }
-                is_merged = mem.get("_merged", False)
-                await self._mem0_dedup_check(
-                    mem["content"], mem["id"], metadata, is_merged
-                )
-            except Exception as e:
-                logger.warning(f"mem0 sync failed for memory: {e}")
-
-        return classified
 
     async def _extract_via_llm(
         self,
@@ -1219,26 +1041,7 @@ class MemoryManager:
                     if settings.MEMORY_LINK_ENABLED:
                         await self._inherit_links(memory_id, new_id)
 
-                    # Update mem0: delete old, add new
-                    if settings.MEM0_ENABLED:
-                        try:
-                            mem0 = _get_mem0()
-                            mem0.add(
-                                corrected_content,
-                                user_id=_MEM0_USER_ID,
-                                metadata={
-                                    "category": mem_type,
-                                    "memory_type": mem_type,
-                                    "importance": importance,
-                                    "confidence": 0.8,
-                                },
-                                infer=False,
-                            )
-                            mem0.delete(memory_id)
-                        except Exception as e:
-                            logger.warning(f"mem0 correction sync failed: {e}")
-
-                corrected_count += 1
+                    corrected_count += 1
                 continue
 
             # Try self_memories table
@@ -1368,45 +1171,8 @@ class MemoryManager:
     # ── Memory search ──
 
     async def search_memories(self, query: str, top_k: int = 5) -> list:
-        """Search long-term memories by query.
-        Uses mem0 for semantic search, falls back to MySQL if mem0 returns few results."""
-        if settings.MEM0_ENABLED:
-            results = await self._search_via_mem0(query, top_k=top_k)
-            # If mem0 has very few results, supplement with MySQL high-importance memories
-            if len(results) < top_k:
-                mysql_results = await self._search_via_mysql(query, top_k=top_k)
-                existing_ids = {r["id"] for r in results}
-                for r in mysql_results:
-                    if r["id"] not in existing_ids:
-                        results.append(r)
-            return results
+        """Search long-term memories by query using local bge embedding."""
         return await self._search_via_mysql(query, top_k)
-
-    async def _search_via_mem0(self, query: str, top_k: int) -> list:
-        """Search via mem0.search() -- returns hybrid (semantic + entity) results."""
-        try:
-            mem0 = _get_mem0()
-            results = mem0.search(query, filters={"user_id": _MEM0_USER_ID}, top_k=top_k)
-        except Exception as e:
-            logger.warning(f"mem0.search() failed: {e}")
-            return []
-
-        memories = []
-        if results and "results" in results:
-            for r in results["results"]:
-                metadata = r.get("metadata", {})
-                memories.append({
-                    "id": r.get("id", ""),
-                    "content": r.get("memory", ""),
-                    "distance": 1.0 - r.get("score", 0.0),
-                    "metadata": {
-                        "category": metadata.get("category", "fact"),
-                        "importance": metadata.get("importance", 0.5),
-                        "memory_type": metadata.get("memory_type") or metadata.get("category", "fact"),
-                        "valence": metadata.get("valence", 0.0),
-                    },
-                })
-        return memories
 
     async def _search_via_mysql(self, query: str, top_k: int) -> list:
         """Fallback: use local embedding (bge-small-zh) for semantic search in MySQL."""
@@ -1659,13 +1425,6 @@ class MemoryManager:
                             "UPDATE memories SET importance = %s WHERE id = %s",
                             (new_importance, row["id"]),
                         )
-                # Sync to mem0 metadata if enabled
-                if settings.MEM0_ENABLED:
-                    try:
-                        mem0 = _get_mem0()
-                        mem0.update(row["id"], metadata={"importance": new_importance})
-                    except Exception:
-                        pass
                 updated += 1
 
         if updated:
@@ -1697,36 +1456,32 @@ class MemoryManager:
         if not dormant_rows:
             return []
 
-        # Use mem0 search to rank dormant memories by relevance
-        if settings.MEM0_ENABLED:
-            try:
-                mem0 = _get_mem0()
-                all_memories = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
-                mem_map = {}
-                if all_memories and "results" in all_memories:
-                    for m in all_memories["results"]:
-                        mem_map[m.get("id")] = m
-
-                now = datetime.utcnow()
-                results = []
-                for r in dormant_rows:
-                    if r["id"] in mem_map:
-                        metadata = r.get("metadata", {})
-                        results.append({
-                            "id": r["id"],
-                            "content": r["content"],
-                            "category": r["category"],
-                            "importance": r["importance"],
-                            "distance": 0.0,
-                            "metadata": {"category": r["category"], "importance": r["importance"]},
-                            "dormant_days": (now - (r["last_accessed"] or r["created_at"])).days,
-                            "_is_dormant": True,
-                        })
-                    if len(results) >= top_k:
-                        break
-                return results[:top_k]
-            except Exception:
-                pass
+        # Use bge embedding to rank dormant memories by relevance to query
+        try:
+            model = _get_embedding_model()
+            query_emb = model.encode(query).tolist()
+            scored = []
+            for r in dormant_rows:
+                cand_emb = model.encode(r["content"]).tolist()
+                sim = _cosine_similarity(query_emb, cand_emb)
+                days_dormant = (datetime.utcnow() - (r["last_accessed"] or r["created_at"])).days
+                scored.append((sim, days_dormant, r))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results = []
+            for sim, days_dormant, r in scored[:top_k]:
+                results.append({
+                    "id": r["id"],
+                    "content": r["content"],
+                    "category": r["category"],
+                    "importance": r["importance"],
+                    "distance": 1.0 - sim,
+                    "metadata": {"category": r["category"], "importance": r["importance"]},
+                    "dormant_days": days_dormant,
+                    "_is_dormant": True,
+                })
+            return results
+        except Exception:
+            pass
 
         # Fallback: just return top-k by importance
         results = []
@@ -1911,35 +1666,6 @@ class MemoryManager:
         except Exception:
             return new_content
 
-    async def _mem0_dedup_check(self, content: str, mem_id: str, metadata: dict, is_merged: bool = False):
-        """Before writing to mem0, check ChromaDB for duplicates."""
-        if not settings.MEM0_ENABLED:
-            return
-        mem0 = _get_mem0()
-        try:
-            results = mem0.search(content, filters={"user_id": _MEM0_USER_ID}, top_k=1)
-        except Exception:
-            # search failed, fall through to normal add
-            pass
-        else:
-            if results and "results" in results and results["results"]:
-                top = results["results"][0]
-                top_id = top.get("id", "")
-                top_score = top.get("score", 0.0)
-                if top_score > 0.90 and top_id:
-                    try:
-                        mem0.update(top_id, text=content, metadata=metadata)
-                        logger.info(f"mem0 dedup update (score={top_score:.2f}): {content[:50]}")
-                        return
-                    except Exception:
-                        pass
-
-        # No duplicate found or update failed — normal add
-        try:
-            mem0.add(content, user_id=_MEM0_USER_ID, metadata=metadata, infer=False)
-        except Exception as e:
-            logger.warning(f"mem0.add(infer=False) failed: {e}")
-
     # ── Memory consolidation ──
 
     async def consolidate_memories(self) -> int:
@@ -2037,25 +1763,6 @@ class MemoryManager:
                     for old_id in source_ids:
                         await self._inherit_links(old_id, new_id, exclude_ids=set(source_ids))
 
-                # Sync with mem0: add new, delete old
-                if settings.MEM0_ENABLED:
-                    try:
-                        mem0 = _get_mem0()
-                        mem0.add(
-                            content,
-                            user_id=_MEM0_USER_ID,
-                            metadata={
-                                "category": memory_type,
-                                "memory_type": memory_type,
-                                "importance": importance,
-                            },
-                            infer=False,
-                        )
-                        for old_id in source_ids:
-                            mem0.delete(old_id)
-                    except Exception as e:
-                        logger.warning(f"mem0 consolidation sync failed: {e}")
-
                 consolidated_count += 1
 
         if consolidated_count:
@@ -2106,48 +1813,9 @@ class MemoryManager:
     # ── Sleep cleanup ──
 
     async def sleep_cleanup(self) -> dict:
-        """Daily memory cleanup: remove ChromaDB junk + cluster-merge similar memories."""
-        result = {"orphan_deleted": 0, "invalid_deleted": 0, "clusters_merged": 0}
+        """Daily memory cleanup: cluster-merge similar memories."""
+        result = {"clusters_merged": 0}
         pool = await get_pool()
-
-        if settings.MEMORY_SLEEP_CLEANUP_ORPHAN_REMOVAL and settings.MEM0_ENABLED:
-            # Collect stale IDs
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT id FROM memories WHERE is_invalid = 1 OR is_consolidated = 1"
-                    )
-                    stale_ids = {row[0] for row in await cur.fetchall()}
-
-            mem0 = _get_mem0()
-            all_mem0 = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
-            if all_mem0 and "results" in all_mem0:
-                # Delete stale entries from ChromaDB
-                for m in all_mem0["results"]:
-                    mid = m.get("id", "")
-                    if mid in stale_ids:
-                        try:
-                            mem0.delete(mid)
-                            result["invalid_deleted"] += 1
-                        except Exception:
-                            pass
-
-                # Delete orphans: in ChromaDB but not in MySQL
-                async with pool.acquire() as conn:
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "SELECT id FROM memories WHERE is_invalid = 0 AND is_consolidated = 0"
-                        )
-                        valid_ids = {row[0] for row in await cur.fetchall()}
-
-                for m in all_mem0["results"]:
-                    mid = m.get("id", "")
-                    if mid and mid not in valid_ids and mid not in stale_ids:
-                        try:
-                            mem0.delete(mid)
-                            result["orphan_deleted"] += 1
-                        except Exception:
-                            pass
 
         # Cluster-merge similar memories
         if settings.MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE:
@@ -2278,21 +1946,6 @@ class MemoryManager:
                              src_conv_id, memory_type),
                         )
 
-                # Sync mem0
-                if settings.MEM0_ENABLED:
-                    try:
-                        mem0 = _get_mem0()
-                        mem0.add(
-                            merged_content, user_id=_MEM0_USER_ID,
-                            metadata={"category": memory_type, "memory_type": memory_type,
-                                     "importance": max_importance},
-                            infer=False,
-                        )
-                        for old_id in source_ids:
-                            mem0.delete(old_id)
-                    except Exception:
-                        pass
-
                 # Inherit links
                 if settings.MEMORY_LINK_ENABLED:
                     for old_id in source_ids:
@@ -2309,18 +1962,11 @@ class MemoryManager:
         return merged_count
 
     async def delete_memory(self, memory_id: str):
-        """Delete memory from both MySQL and mem0."""
+        """Delete memory from MySQL and invalidate cache."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
-
-        if settings.MEM0_ENABLED:
-            try:
-                mem0 = _get_mem0()
-                mem0.delete(memory_id)
-            except Exception as e:
-                logger.warning(f"mem0.delete() failed for {memory_id}: {e}")
 
         _invalidate_user_mem_cache()
 

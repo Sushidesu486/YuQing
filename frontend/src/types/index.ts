@@ -44,7 +44,6 @@ export interface PersonalityConfig {
 
 // Memory debug types
 export interface MemoryStats {
-  mem0_enabled: boolean;
   memory_link_enabled: boolean;
   dedup_enabled: boolean;
   sleep_cleanup_enabled: boolean;
@@ -83,8 +82,7 @@ export interface RecallStage {
 
 export interface RecallDebugResult {
   query: string;
-  mem0_enabled: boolean;
-  stage_mem0: RecallStage[];
+  stage_semantic_search: RecallStage[];
   stage_pinned: RecallStage[];
   stage_activation_spread: {
     enabled: boolean;
@@ -126,7 +124,6 @@ export interface MemoryLink {
 }
 
 export interface CleanupResult {
-  orphan_deleted: number;
   invalid_deleted: number;
   clusters_merged: number;
 }

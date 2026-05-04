@@ -113,7 +113,6 @@ function OverviewTab({ onCleanup }: { onCleanup: (r: CleanupResult) => void }) {
     <div className="space-y-4">
       {/* Feature toggles */}
       <div className="flex flex-wrap gap-2">
-        <StatusBadge on={stats.mem0_enabled} label="mem0" />
         <StatusBadge on={stats.memory_link_enabled} label="关联" />
         <StatusBadge on={stats.dedup_enabled} label="去重" />
         <StatusBadge on={stats.sleep_cleanup_enabled} label="睡眠清理" />
@@ -277,7 +276,7 @@ function RecallDebugTab() {
   const [result, setResult] = useState<RecallDebugResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    mem0: true, pinned: true, spread: true, dormant: true, final: true, layered: true,
+    semantic_search: true, pinned: true, spread: true, dormant: true, final: true, layered: true,
   });
 
   const toggle = (key: string) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
@@ -294,7 +293,7 @@ function RecallDebugTab() {
   };
 
   const stages = [
-    { key: 'mem0', label: 'mem0 命中', color: 'bg-green-500', count: result?.stage_mem0?.length ?? 0 },
+    { key: 'semantic_search', label: '语义搜索', color: 'bg-green-500', count: result?.stage_semantic_search?.length ?? 0 },
     { key: 'pinned', label: 'Pinned Facts', color: 'bg-blue-500', count: result?.stage_pinned?.length ?? 0 },
     { key: 'spread', label: '激活传播', color: 'bg-purple-500', count: result?.stage_activation_spread?.spread_memories?.length ?? 0 },
     { key: 'dormant', label: '休眠唤醒', color: 'bg-yellow-500', count: result?.stage_dormant?.length ?? 0 },
@@ -337,8 +336,6 @@ function RecallDebugTab() {
         <div className="flex-1 overflow-y-auto space-y-2">
           {/* Summary bar */}
           <div className="flex items-center gap-2 text-[10px] text-gray-400 px-1">
-            <span>mem0: {result.mem0_enabled ? 'ON' : 'OFF'}</span>
-            <span>|</span>
             <span>记忆: {result.total_memories_count}</span>
             <span>|</span>
             <span>链接: {result.memory_links_count}</span>
@@ -362,7 +359,7 @@ function RecallDebugTab() {
               {expanded[stage.key] && (
                 <div className="px-3 pb-3 border-t border-gray-50">
                   {/* mem0 stage */}
-                  {stage.key === 'mem0' && (result.stage_mem0?.length ? result.stage_mem0.map((m, i) => (
+                  {stage.key === 'semantic_search' && (result.stage_semantic_search?.length ? result.stage_semantic_search.map((m, i) => (
                     <StageItem key={i} content={m.content} type={m.memory_type}>
                       <ScoreBar label="语义相似度" value={m.semantic_sim} color="bg-green-500" />
                       {m.importance !== undefined && <ScoreBar label="重要性" value={m.importance} color="bg-blue-500" />}
@@ -681,7 +678,7 @@ export function MemoryDebugPanel({ open, onClose }: Props) {
           <h2 className="text-sm font-semibold text-gray-800">Memory Debug</h2>
           {cleanupResult && (
             <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded">
-              清理完成: 删除 {cleanupResult.orphan_deleted + cleanupResult.invalid_deleted}, 合并 {cleanupResult.clusters_merged}
+              清理完成: 合并 {cleanupResult.clusters_merged}
             </span>
           )}
         </div>
