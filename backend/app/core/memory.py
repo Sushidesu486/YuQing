@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # ── mem0 fallback prompts (used only when MEM0_ENABLED=False) ──
 
-MEMORY_CLASSIFY_PROMPT_ZH = """分析以下对话，提取两类信息。
+MEMORY_CLASSIFY_PROMPT_ZH = """分析以下对话，提取信息并检测记忆矛盾。
 
 第一类：关于用户的重要信息
 类型说明：
@@ -39,6 +39,16 @@ self提取规则：
 - 只提取语晴真正在表达自己的内容，不提取反问、引用、假设、客套
 - 确保内容是完整的句子片段，不是碎片化的词组
 
+第三类：记忆纠正
+以下是语晴之前记住的关于用户的信息：
+{recalled_memories}
+
+对比当前对话内容，检查是否有矛盾：
+- 如果用户明确纠正了之前的记忆（"你记错了"、"不是"、"我其实是..."），或当前信息与已有记忆明显矛盾
+- 返回 corrections 数组，每条包含被纠正的记忆 ID（方括号中的ID）和正确内容
+- 只在有明确矛盾时才纠正，不要因为信息补充就标记为纠正
+- 如果没有矛盾，corrections 返回空数组
+
 对话内容：
 {conversation}
 
@@ -49,13 +59,16 @@ self提取规则：
   ],
   "self_memories": [
     {"content": "语晴的自我表达", "memory_type": "self_interest/self_experience/self_opinion/self_habit", "importance": 0.5}
+  ],
+  "corrections": [
+    {"memory_id": "被纠正的记忆ID", "corrected_content": "正确内容", "reason": "简要说明"}
   ]
 }
 
-如果某类没有值得记忆的内容，对应数组返回空数组 []。
+如果某类没有值得记忆的内容，对应数组返回空数组 []。如果没有矛盾，corrections 返回空数组 []。
 只返回JSON，不要其他文字。"""
 
-MEMORY_EXTRACT_PROMPT_EN = """Analyze the following conversation and extract two categories of information.
+MEMORY_EXTRACT_PROMPT_EN = """Analyze the following conversation, extract information, and detect memory contradictions.
 
 Category 1: Important information about the user
 - Factual information (name, preferences, occupation, etc.)
@@ -73,6 +86,16 @@ self extraction rules:
 - Only extract genuine self-expression, not rhetorical questions, quotes, or hypotheticals
 - Ensure content is a complete sentence fragment, not a fragmented phrase
 
+Category 3: Memory corrections
+Below are things YuQing previously remembered about the user:
+{recalled_memories}
+
+Compare with the current conversation for contradictions:
+- If the user explicitly corrects a previous memory ("you remembered wrong", "no, actually..."), or if current info clearly contradicts a stored memory
+- Return a corrections array with the memory ID (from square brackets) and corrected content
+- Only flag as correction when there's a clear contradiction, not just additional information
+- If no contradictions, return empty array
+
 Conversation:
 {conversation}
 
@@ -83,10 +106,14 @@ Return in JSON format:
   ],
   "self_memories": [
     {"content": "YuQing's self-expression", "memory_type": "self_interest/self_experience/self_opinion/self_habit", "importance": 0.5}
+  ],
+  "corrections": [
+    {"memory_id": "ID of memory to correct", "corrected_content": "correct content", "reason": "brief explanation"}
   ]
 }
 
 If a category has nothing worth remembering, return an empty array [].
+If no contradictions, corrections should be an empty array [].
 Return only JSON, no other text."""
 
 CONSOLIDATE_PROMPT_ZH = """以下是关于同一个用户的若干条记忆，其中一些可能是重复或相似的。请合并和精简这些记忆：
@@ -222,10 +249,10 @@ async def sync_memories_to_mem0():
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
-            # Sync ALL memories (including consolidated — they contain important merged facts)
+            # Sync ALL valid memories (including consolidated — they contain important merged facts)
             await cur.execute(
                 "SELECT id, content, category, memory_type, importance, "
-                "valence, confidence FROM memories ORDER BY importance DESC"
+                "valence, confidence FROM memories WHERE is_invalid = 0 ORDER BY importance DESC"
             )
             rows = await cur.fetchall()
 
@@ -330,7 +357,7 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence "
-                    "FROM memories WHERE importance >= 0.8 "
+                    "FROM memories WHERE importance >= 0.8 AND is_invalid = 0 "
                     "ORDER BY importance DESC LIMIT 10"
                 )
                 pinned_rows = await cur.fetchall()
@@ -500,19 +527,21 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
+        recalled_facts: list | None = None,
     ) -> list:
-        """Extract memorable facts and store them."""
+        """Extract memorable facts, detect contradictions, and store them."""
         stored = []
         if settings.MEM0_ENABLED:
             stored = await self._extract_via_mem0(
-                conversation_id, user_message, assistant_response, language
+                conversation_id, user_message, assistant_response, language,
+                recalled_facts=recalled_facts,
             )
         else:
             stored = await self._extract_via_llm(
-                conversation_id, user_message, assistant_response, language
+                conversation_id, user_message, assistant_response, language,
+                recalled_facts=recalled_facts,
             )
 
-        # Self-memories are now extracted inside _extract_via_llm (no separate call needed)
         return stored
 
     async def _extract_via_mem0(
@@ -521,6 +550,7 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
+        recalled_facts: list | None = None,
     ) -> list:
         """Extract memories using LLM classification, store in mem0 (infer=False) + MySQL.
 
@@ -530,7 +560,8 @@ class MemoryManager:
         """
         # Step 1: Use LLM to classify and extract structured memories
         classified = await self._extract_via_llm(
-            conversation_id, user_message, assistant_response, language
+            conversation_id, user_message, assistant_response, language,
+            recalled_facts=recalled_facts,
         )
         if not classified:
             return []
@@ -564,8 +595,9 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
+        recalled_facts: list | None = None,
     ) -> list:
-        """Use LLM to extract user memories and self-memories in one call."""
+        """Use LLM to extract user memories, self-memories, and detect contradictions in one call."""
         from app.core.llm import generate_completion
 
         conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
@@ -573,6 +605,15 @@ class MemoryManager:
             MEMORY_CLASSIFY_PROMPT_ZH if language == "zh" else MEMORY_EXTRACT_PROMPT_EN
         )
         prompt = prompt_template.replace("{conversation}", conversation_text)
+
+        # Inject recalled memories for contradiction detection
+        if recalled_facts:
+            recalled_text = "\n".join(
+                f"[{m['id']}] {m['content']}" for m in recalled_facts
+            )
+            prompt = prompt.replace("{recalled_memories}", recalled_text)
+        else:
+            prompt = prompt.replace("{recalled_memories}", "（无已记住的信息）")
 
         try:
             result = await generate_completion(
@@ -594,14 +635,16 @@ class MemoryManager:
             logger.warning(f"Failed to parse memory extraction result: {result[:200]}")
             return []
 
-        # Handle both new format {"user_memories": [...], "self_memories": [...]}
+        # Handle both new format {"user_memories": [...], "self_memories": [...], "corrections": [...]}
         # and legacy format (bare array)
         if isinstance(parsed, list):
             user_memories_raw = parsed
             self_memories_raw = []
+            corrections_raw = []
         elif isinstance(parsed, dict):
             user_memories_raw = parsed.get("user_memories", [])
             self_memories_raw = parsed.get("self_memories", [])
+            corrections_raw = parsed.get("corrections", [])
         else:
             return []
 
@@ -644,7 +687,124 @@ class MemoryManager:
 
         if stored:
             logger.info(f"Extracted {len(stored)} user memories from conversation {conversation_id[:8]}")
+
+        # Apply memory corrections
+        if corrections_raw:
+            await self._apply_corrections(conversation_id, corrections_raw)
+
         return stored
+
+    async def _apply_corrections(
+        self,
+        conversation_id: str,
+        corrections_raw: list,
+    ):
+        """Apply memory corrections: mark old memory invalid, store corrected version."""
+        pool = await get_pool()
+        corrected_count = 0
+
+        for corr in corrections_raw:
+            memory_id = corr.get("memory_id", "").strip()
+            corrected_content = corr.get("corrected_content", "").strip()
+            reason = corr.get("reason", "").strip()
+
+            if not memory_id:
+                continue
+
+            # Try to find in memories table
+            found = False
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id, memory_type, importance, is_consolidated "
+                        "FROM memories WHERE id = %s AND is_invalid = 0",
+                        (memory_id,),
+                    )
+                    row = await cur.fetchone()
+
+            if row:
+                # Mark old memory as invalid
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE memories SET is_invalid = 1 WHERE id = %s",
+                            (memory_id,),
+                        )
+                logger.info(f"Memory correction: [{memory_id}] marked invalid. Reason: {reason}")
+
+                # Insert corrected version as new memory
+                if corrected_content:
+                    new_id = _generate_id()
+                    mem_type = row["memory_type"] or "fact"
+                    importance = float(row.get("importance", 0.7))
+                    # Boost importance slightly since this is a correction
+                    importance = min(importance + 0.1, 1.0)
+
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                "INSERT INTO memories (id, content, category, importance, "
+                                "original_importance, source_conversation_id, "
+                                "memory_type, valence, arousal, emotion_label, confidence) "
+                                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                                (new_id, corrected_content, mem_type, importance, importance,
+                                 conversation_id, mem_type, 0.0, 0.0, "", 0.8),
+                            )
+
+                    # Update mem0: delete old, add new
+                    if settings.MEM0_ENABLED:
+                        try:
+                            mem0 = _get_mem0()
+                            mem0.add(
+                                corrected_content,
+                                user_id=_MEM0_USER_ID,
+                                metadata={
+                                    "category": mem_type,
+                                    "memory_type": mem_type,
+                                    "importance": importance,
+                                    "confidence": 0.8,
+                                },
+                                infer=False,
+                            )
+                            mem0.delete(memory_id)
+                        except Exception as e:
+                            logger.warning(f"mem0 correction sync failed: {e}")
+
+                corrected_count += 1
+                continue
+
+            # Try self_memories table
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id FROM self_memories WHERE id = %s AND is_invalid = 0",
+                        (memory_id,),
+                    )
+                    sm_row = await cur.fetchone()
+
+            if sm_row:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE self_memories SET is_invalid = 1 WHERE id = %s",
+                            (memory_id,),
+                        )
+                        if corrected_content:
+                            new_sm_id = _generate_id()
+                            await cur.execute(
+                                "INSERT INTO self_memories (id, content, memory_type, "
+                                "importance, source_conversation_id) "
+                                "VALUES (%s, %s, %s, %s, %s)",
+                                (new_sm_id, corrected_content, "self_reflection", 0.6,
+                                 conversation_id),
+                            )
+                logger.info(f"Self-memory correction: [{memory_id}] marked invalid. Reason: {reason}")
+                corrected_count += 1
+            else:
+                logger.debug(f"Correction target [{memory_id}] not found in any table")
+
+        if corrected_count:
+            logger.info(f"Applied {corrected_count} memory correction(s) in conversation {conversation_id[:8]}")
 
     async def _store_self_memories(
         self,
@@ -789,7 +949,7 @@ class MemoryManager:
                     "SELECT id, content, category, importance, "
                     "memory_type, valence, confidence "
                     "FROM memories "
-                    "WHERE importance > 0.2 "
+                    "WHERE importance > 0.2 AND is_invalid = 0 "
                     "ORDER BY importance DESC LIMIT %s",
                     (top_k,),
                 )
@@ -815,7 +975,7 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, access_count "
-                    "FROM self_memories WHERE is_consolidated = 0 "
+                    "FROM self_memories WHERE is_consolidated = 0 AND is_invalid = 0 "
                     "ORDER BY importance DESC LIMIT %s",
                     (limit,),
                 )
@@ -829,7 +989,7 @@ class MemoryManager:
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT COUNT(*) as cnt FROM self_memories WHERE is_consolidated = 0"
+                    "SELECT COUNT(*) as cnt FROM self_memories WHERE is_consolidated = 0 AND is_invalid = 0"
                 )
                 row = await cur.fetchone()
                 total = row[0] if row else 0
@@ -848,7 +1008,7 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance FROM self_memories "
-                    "WHERE is_consolidated = 0 ORDER BY importance DESC"
+                    "WHERE is_consolidated = 0 AND is_invalid = 0 ORDER BY importance DESC"
                 )
                 rows = await cur.fetchall()
 
@@ -965,7 +1125,7 @@ class MemoryManager:
                     "SELECT id, original_importance, last_accessed, access_count "
                     "FROM memories "
                     "WHERE last_accessed IS NOT NULL "
-                    "AND is_consolidated = 0 "
+                    "AND is_consolidated = 0 AND is_invalid = 0 "
                     "AND (original_importance IS NULL OR original_importance > 0.05) "
                     "ORDER BY last_accessed ASC "
                     "LIMIT 200"
@@ -1086,7 +1246,7 @@ class MemoryManager:
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await cur.execute("SELECT COUNT(*) as cnt FROM memories WHERE is_consolidated = 0")
+                await cur.execute("SELECT COUNT(*) as cnt FROM memories WHERE is_consolidated = 0 AND is_invalid = 0")
                 row = await cur.fetchone()
                 total = row[0] if row else 0
 
@@ -1103,7 +1263,7 @@ class MemoryManager:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
                     await cur.execute(
                         "SELECT id, content, importance FROM memories "
-                        "WHERE memory_type = %s AND is_consolidated = 0 "
+                        "WHERE memory_type = %s AND is_consolidated = 0 AND is_invalid = 0 "
                         "ORDER BY importance DESC LIMIT 15",
                         (memory_type,),
                     )
@@ -1219,14 +1379,15 @@ class MemoryManager:
                 if category:
                     await cur.execute(
                         "SELECT id, content, category, importance, created_at, access_count "
-                        "FROM memories WHERE category = %s "
+                        "FROM memories WHERE category = %s AND is_invalid = 0 "
                         "ORDER BY importance DESC LIMIT %s",
                         (category, limit),
                     )
                 else:
                     await cur.execute(
                         "SELECT id, content, category, importance, created_at, access_count "
-                        "FROM memories ORDER BY importance DESC LIMIT %s",
+                        "FROM memories WHERE is_invalid = 0 "
+                        "ORDER BY importance DESC LIMIT %s",
                         (limit,),
                     )
                 rows = await cur.fetchall()

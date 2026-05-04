@@ -223,6 +223,26 @@ async def init_db():
                 )
                 logger.info("Migration: added column self_memories.is_consolidated")
 
+            # Migration: add is_invalid to memories
+            await cur.execute("DESCRIBE memories")
+            mem_columns = {row[0] for row in await cur.fetchall()}
+            if "is_invalid" not in mem_columns:
+                await cur.execute(
+                    "ALTER TABLE memories ADD COLUMN "
+                    "is_invalid TINYINT NOT NULL DEFAULT 0"
+                )
+                logger.info("Migration: added column memories.is_invalid")
+
+            # Migration: add is_invalid to self_memories
+            await cur.execute("DESCRIBE self_memories")
+            sm_cols = {row[0] for row in await cur.fetchall()}
+            if "is_invalid" not in sm_cols:
+                await cur.execute(
+                    "ALTER TABLE self_memories ADD COLUMN "
+                    "is_invalid TINYINT NOT NULL DEFAULT 0"
+                )
+                logger.info("Migration: added column self_memories.is_invalid")
+
             # Migration: backfill memory_type from category
             await cur.execute(
                 "UPDATE memories SET memory_type = CASE category "

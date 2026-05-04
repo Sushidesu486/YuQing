@@ -203,11 +203,12 @@ class CognitiveProcessor:
             except Exception as e:
                 logger.warning(f"Failed to save emotion snapshot: {e}")
 
-        # Extract memories
+        # Extract memories (pass recalled facts for contradiction detection)
         if settings.AUTO_MEMORY_EXTRACTION:
             try:
                 extracted = await memory_manager.extract_and_store_memories(
-                    conversation_id, user_message, full_response, language
+                    conversation_id, user_message, full_response, language,
+                    recalled_facts=layered_memory.get("facts", []) + layered_memory.get("events", []),
                 )
                 if extracted:
                     yield {
