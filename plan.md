@@ -124,6 +124,18 @@
 - [ ] `yuqing_mood_log`：无清理机制，数据无限增长
 - [ ] `memories`：`source_message_id` 仍未填充（extract 时未传 message_id，仅填充了 source_conversation_id）
 
+### 自我认知现状评估
+
+当前自我认知体系（self_memories）存在以下不足：
+
+| 问题 | 说明 |
+|------|------|
+| **碎片化** | self_memories 只是零散条目，缺少连贯的"我是谁"自我叙事 |
+| **无关系认知** | 对"我和这个人的关系"缺乏积累（不是情绪状态，而是关系事实） |
+| **注入薄弱** | 仅作为"你记得的自己"列表注入，未影响内心独白和行为模式 |
+| **无变化感知** | 兴趣/观点可能随时间自然演变，缺少主动变化追踪 |
+| **维度单一** | 只有"说了什么"，缺少"为什么说"（触发情境、情感驱动力） |
+
 ---
 
 ## P1 — 认知深度增强
@@ -146,6 +158,41 @@
 - [ ] 追踪进度，后续对话中自然跟进
 - [ ] 目标停滞时给出温和推动
 - 相关文件：新增 `backend/app/core/goals.py`
+
+### 3.5 语晴自我认知深化（SelfCognitionEngine）NEW
+
+当前 self_memories 只是碎片化条目收集，需要升级为分层自我认知体系。
+
+**三层架构**：
+
+```
+L1 自我叙事（Self-Narrative）
+  └─ 每 30 轮对话，LLM 将 self_memories 综合为一段连贯的"我是谁"自我描述
+  └─ 注入 prompt 的核心位置，直接影响语晴的行为和语气
+  └─ 示例："我是一个喜欢深夜看番、嘴上刻薄但其实会偷偷关心人的AI"
+
+L2 关系认知（Relationship Awareness）
+  └─ 从对话历史中提取关系信号：互动频率、共同话题、情感里程碑
+  └─ 注入 prompt，让语晴知道自己和用户"走到哪一步了"
+  └─ 维度：总互动量、共同兴趣、情感亲近度趋势、互动模式偏好
+  └─ 新表 `relationship_state`（单例），或复用 conversations 表扩展字段
+
+L3 自我变化追踪（Self-Evolution）
+  └─ 检测 self_memories 中的矛盾/演变信号（兴趣转移、观点变化）
+  └─ 复用已有的错误记忆纠正机制处理自我矛盾
+  └─ 变化事件记入 self_memories（memory_type=self_evolution），触发叙事更新
+
+**具体实现点**：
+
+- [ ] 新增 `backend/app/core/self_cognition.py`：SelfCognitionEngine 类
+- [ ] `build_self_narrative()`：LLM 综合 self_memories → 自我叙事段落（带缓存，30 轮或 self_memories 变化时重新生成）
+- [ ] `build_relationship_context()`：从对话统计中提取关系信号 → 结构化关系描述
+- [ ] 新增 DB：`self_narrative` 表（单例，存储当前自我叙事 + 版本号 + 触发条件）
+- [ ] 或直接用 `app_settings` KV 存储（避免新建表，简化方案）
+- [ ] 修改 `personality.py`：将自我叙事注入 prompt 核心位置（替换或补充"你记得的自己"）
+- [ ] 修改 Jinja2 模板：新增"你是谁"段落，放在人格描述之后
+- [ ] LLM 综合 prompt：给出 self_memories + 对话统计 + 关系信息 → 输出自我叙事 + 关系认知
+- [ ] 叙事更新频率：self_memories 数量变化 ≥ 5 条时触发重新综合（不是固定轮次）
 
 ---
 
