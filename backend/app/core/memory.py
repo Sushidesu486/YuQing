@@ -212,6 +212,14 @@ _embedding_model = None
 _self_mem_embedding_cache: dict[str, list] = {}  # {content: embedding_vector}
 _self_mem_cache_valid = False
 
+_user_mem_embedding_cache: dict[str, dict] = {}   # {id: {"emb": vector, "content": str}}
+_user_mem_cache_valid = False
+
+
+def _invalidate_user_mem_cache():
+    global _user_mem_cache_valid
+    _user_mem_cache_valid = False
+
 
 def _get_embedding_model():
     global _embedding_model
@@ -245,11 +253,23 @@ def init_mem0():
 
 async def sync_memories_to_mem0():
     """Sync ALL MySQL memories to mem0 vector store.
-    Called once at startup. Skips memories already present in mem0."""
+    Called once at startup. Uses app_settings to track whether sync has already been done,
+    avoiding duplicates caused by --reload restarts."""
     pool = await get_pool()
+
+    # Check if sync was already done (survives restarts but not DB resets)
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT value FROM app_settings WHERE `key` = 'mem0_sync_done'"
+            )
+            row = await cur.fetchone()
+            if row:
+                logger.info("mem0 sync already done (skipping)")
+                return
+
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
-            # Sync ALL valid memories (including consolidated — they contain important merged facts)
             await cur.execute(
                 "SELECT id, content, category, memory_type, importance, "
                 "valence, confidence FROM memories WHERE is_invalid = 0 ORDER BY importance DESC"
@@ -260,16 +280,8 @@ async def sync_memories_to_mem0():
         return
 
     mem0 = _get_mem0()
-    # Check what mem0 already has
-    existing = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
-    existing_ids = set()
-    if existing and "results" in existing:
-        existing_ids = {m.get("id") for m in existing["results"]}
-
     synced = 0
     for row in rows:
-        if row["id"] in existing_ids:
-            continue
         try:
             metadata = {
                 "category": row["category"] or "fact",
@@ -289,6 +301,14 @@ async def sync_memories_to_mem0():
             synced += 1
         except Exception as e:
             logger.warning(f"Failed to sync memory {row['id']}: {e}")
+
+    # Mark sync as done
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO app_settings (`key`, value) VALUES ('mem0_sync_done', '1') "
+                "ON DUPLICATE KEY UPDATE value = '1'"
+            )
 
     if synced:
         logger.info(f"Synced {synced} existing memories to mem0 vector store")
@@ -311,6 +331,31 @@ def _time_ago(dt: datetime) -> str:
         return f"{int(days / 30)}个月前"
     else:
         return f"{int(days / 365)}年前"
+
+
+async def _load_user_mem_cache():
+    """Load all valid user memories' embeddings into cache."""
+    global _user_mem_cache_valid, _user_mem_embedding_cache
+    try:
+        model = _get_embedding_model()
+    except Exception:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                "SELECT id, content FROM memories WHERE is_invalid = 0 AND is_consolidated = 0"
+            )
+            rows = await cur.fetchall()
+    _user_mem_embedding_cache.clear()
+    for r in rows:
+        if r["content"] not in _user_mem_embedding_cache:
+            _user_mem_embedding_cache[r["id"]] = {
+                "emb": model.encode(r["content"]).tolist(),
+                "content": r["content"],
+            }
+    _user_mem_cache_valid = True
+    logger.info(f"User memory dedup cache loaded: {len(_user_mem_embedding_cache)} entries")
 
 
 class MemoryManager:
@@ -377,16 +422,383 @@ class MemoryManager:
                     },
                 })
 
-        # 4. Dormant memory reactivation
+        # 4. Activation spreading — neural-like associative recall
+        if settings.MEMORY_LINK_ENABLED:
+            spread = await self._activation_spread(recalled)
+            existing_ids = {r["id"] for r in recalled}
+            for mem in spread:
+                if mem["id"] not in existing_ids:
+                    recalled.append(mem)
+
+        # 5. Dormant memory reactivation
         dormant = await self.get_dormant_memories(user_message)
         for d in dormant:
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
-        # 5. Build layered memory structure
+        # 6. Build layered memory structure
         layered_memory = await self._build_layered_memory(recalled)
 
         return messages_context, layered_memory
+
+    # ── Debug: recall pipeline introspection ──
+
+    async def debug_recall(self, query: str, conversation_id: str = None) -> dict:
+        """Run the full recall pipeline and return every stage's output for debugging.
+
+        Returns:
+            {
+                "query": str,
+                "mem0_enabled": bool,
+                "stage_mem0": list,           # mem0 直接命中
+                "stage_pinned": list,         # pinned facts
+                "stage_activation_spread": {  # 激活传播详情
+                    "enabled": bool,
+                    "seed_count": int,
+                    "spread_count": int,
+                    "iterations": int,
+                    "spread_memories": list,  # 扩散召回的记忆
+                },
+                "stage_dormant": list,        # 休眠记忆
+                "stage_final_scored": list,   # 最终排序（含 triple hybrid score）
+                "stage_layered": dict,        # 分层注入结果
+                "memory_links_count": int,    # 图中总链接数
+                "total_memories_count": int,  # 有效记忆总数
+            }
+        """
+        from app.config import settings as cfg
+        pool = await get_pool()
+
+        # Stats
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) FROM memories WHERE is_invalid = 0")
+                total_mem = (await cur.fetchone())[0]
+                await cur.execute("SELECT COUNT(*) FROM memory_links")
+                total_links = (await cur.fetchone())[0]
+
+        # Stage 1: mem0 search
+        mem0_results = []
+        if cfg.MEM0_ENABLED:
+            try:
+                mem0_results = await self._search_via_mem0(query, top_k=10)
+                if len(mem0_results) < 10:
+                    mysql_supplement = await self._search_via_mysql(query, top_k=10)
+                    existing_ids = {r["id"] for r in mem0_results}
+                    for r in mysql_supplement:
+                        if r["id"] not in existing_ids:
+                            r["_source"] = "mysql_fallback"
+                            mem0_results.append(r)
+            except Exception as e:
+                mem0_results = []
+        else:
+            mem0_results = await self._search_via_mysql(query, top_k=10)
+
+        # Stage 2: pinned facts
+        pinned = []
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, memory_type, importance FROM memories "
+                    "WHERE importance >= 0.8 AND is_invalid = 0 ORDER BY importance DESC LIMIT 10"
+                )
+                pinned = await cur.fetchall()
+        pinned_ids = {r["id"] for r in pinned}
+        pinned_clean = [
+            {"id": r["id"], "content": r["content"], "memory_type": r.get("memory_type"), "importance": float(r["importance"])}
+            for r in pinned if r["id"] not in {m["id"] for m in mem0_results}
+        ]
+
+        # Stage 3: activation spread
+        spread_result = {
+            "enabled": cfg.MEMORY_LINK_ENABLED,
+            "seed_count": len(mem0_results),
+            "spread_count": 0,
+            "iterations": 0,
+            "spread_memories": [],
+        }
+        spread_memories = []
+        if cfg.MEMORY_LINK_ENABLED and mem0_results:
+            spread_memories = await self._activation_spread(mem0_results)
+            existing_ids = {r["id"] for r in mem0_results}
+            for mem in spread_memories:
+                if mem["id"] not in existing_ids:
+                    existing_ids.add(mem["id"])
+            spread_result["spread_count"] = len([m for m in spread_memories if m.get("_via_link")])
+            spread_result["iterations"] = cfg.MEMORY_LINK_MAX_ITERATIONS
+            spread_result["spread_memories"] = [
+                {
+                    "id": m["id"],
+                    "content": m["content"],
+                    "activation": round(m.get("_activation", 0), 4),
+                    "memory_type": m.get("metadata", {}).get("memory_type"),
+                    "importance": m.get("metadata", {}).get("importance"),
+                }
+                for m in spread_memories if m.get("_via_link")
+            ]
+
+        # Stage 4: dormant
+        dormant = []
+        if conversation_id:
+            dormant = await self.get_dormant_memories(query)
+            dormant_ids = {r["id"] for r in mem0_results + pinned_clean + spread_memories}
+            dormant = [d for d in dormant if d["id"] not in dormant_ids]
+
+        # Stage 5: final scored list
+        all_recalled = mem0_results + pinned_clean + spread_memories + dormant
+
+        def _relevance_score(mem: dict) -> float:
+            semantic = 1.0 - mem.get("distance", 1.0)
+            importance = float(mem.get("metadata", {}).get("importance", 0.5))
+            activation = mem.get("_activation", 1.0 if not mem.get("_via_link") else 0.0)
+            if not mem.get("_via_link"):
+                activation = max(activation, 1.0)
+            access_factor = mem.get("_access_factor", 1.0)
+            effective_importance = importance * access_factor
+            return semantic * 0.5 + activation * 0.3 + effective_importance * 0.2
+
+        for mem in all_recalled:
+            mem["_score"] = round(_relevance_score(mem), 4)
+
+        all_recalled.sort(key=_relevance_score, reverse=True)
+        final_scored = [
+            {
+                "id": m["id"],
+                "content": m["content"],
+                "memory_type": m.get("metadata", {}).get("memory_type"),
+                "importance": m.get("metadata", {}).get("importance"),
+                "source": "mem0" if not m.get("_via_link") and not m.get("_is_dormant") else ("activation_spread" if m.get("_via_link") else "dormant"),
+                "semantic_sim": round(1.0 - m.get("distance", 1.0), 4),
+                "activation": round(m.get("_activation", 1.0), 4),
+                "hybrid_score": m["_score"],
+            }
+            for m in all_recalled
+        ]
+
+        # Stage 6: layered
+        layered = await self._build_layered_memory(all_recalled)
+
+        return {
+            "query": query,
+            "mem0_enabled": cfg.MEM0_ENABLED,
+            "stage_mem0": [
+                {"id": m["id"], "content": m["content"], "score": round(1.0 - m.get("distance", 1.0), 4), "source": m.get("_source", "mem0")}
+                for m in mem0_results
+            ],
+            "stage_pinned": pinned_clean,
+            "stage_activation_spread": spread_result,
+            "stage_dormant": [
+                {"id": d["id"], "content": d["content"], "dormant_days": d.get("dormant_days")}
+                for d in dormant
+            ],
+            "stage_final_scored": final_scored,
+            "stage_layered": layered,
+            "memory_links_count": total_links,
+            "total_memories_count": total_mem,
+        }
+
+    # ── Activation spreading (neural-like recall) ──
+
+    async def _activation_spread(self, seed_memories: list) -> list:
+        """多轮迭代激活传播 — 基于 Synapse 论文的 Spreading Activation。
+
+        算法：
+        1. 种子记忆 activation = 1 - distance（mem0 语义相似度）
+        2. 加载子图（种子的一度 + 二度邻居 + 边）
+        3. 迭代传播（MAX_ITERATIONS 轮）：
+           - 每跳衰减：propagated = activation × strength × DECAY_RATE
+           - Fan Effect：propagated /= out_degree
+           - 累加到邻居的 activation
+           - Lateral Inhibition：只保留 Top-K
+        4. 过滤 activation < THRESHOLD 的记忆
+        5. 返回扩散召回的记忆列表（不含种子）
+        """
+        pool = await get_pool()
+        seed_ids = [m["id"] for m in seed_memories if m.get("id")]
+        if not seed_ids:
+            return []
+
+        # Initialize activation map: seed memories
+        activation: dict[str, float] = {}
+        for m in seed_memories:
+            if m.get("id"):
+                # distance = 1 - cosine_similarity, so semantic_sim = 1 - distance
+                semantic_sim = 1.0 - m.get("distance", 0.5)
+                activation[m["id"]] = max(semantic_sim, 0.1)
+
+        # Load subgraph: all edges touching any seed or their neighbors (2 hops)
+        # First collect all potentially reachable IDs (seed + 1-hop neighbors)
+        seed_ph = ",".join(["%s"] * len(seed_ids))
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT DISTINCT "
+                    f"CASE WHEN source_id IN ({seed_ph}) THEN target_id ELSE source_id END AS neighbor_id "
+                    f"FROM memory_links "
+                    f"WHERE source_id IN ({seed_ph}) OR target_id IN ({seed_ph})",
+                    tuple(seed_ids + seed_ids + seed_ids),
+                )
+                hop1_ids = [row[0] for row in await cur.fetchall()]
+
+        # Exclude seed IDs from neighbors
+        neighbor_ids = [nid for nid in hop1_ids if nid not in activation]
+
+        if not neighbor_ids:
+            return []
+
+        # Load all edges for subgraph (seed + hop1)
+        all_relevant = list(set(seed_ids + neighbor_ids))
+        relevant_ph = ",".join(["%s"] * len(all_relevant))
+
+        # Load edges as adjacency: {node_id: [(neighbor_id, strength), ...]}
+        adjacency: dict[str, list[tuple[str, float]]] = {}
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT source_id, target_id, strength FROM memory_links "
+                    f"WHERE source_id IN ({relevant_ph}) OR target_id IN ({relevant_ph})",
+                    tuple(all_relevant + all_relevant),
+                )
+                rows = await cur.fetchall()
+
+        for source_id, target_id, strength in rows:
+            adjacency.setdefault(source_id, []).append((target_id, float(strength)))
+            adjacency.setdefault(target_id, []).append((source_id, float(strength)))
+
+        # Load neighbor importance for scoring
+        importance_map: dict[str, float] = {}
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"SELECT id, content, memory_type, importance, valence, confidence, access_count "
+                    f"FROM memories WHERE id IN ({relevant_ph}) AND is_invalid = 0",
+                    tuple(all_relevant),
+                )
+                mem_rows = await cur.fetchall()
+                for r in mem_rows:
+                    importance_map[r["id"]] = float(r.get("importance", 0.5))
+
+        # Iterative activation propagation
+        max_iter = settings.MEMORY_LINK_MAX_ITERATIONS
+        decay_rate = settings.MEMORY_LINK_DECAY_RATE
+        use_fan = settings.MEMORY_LINK_FAN_EFFECT
+        use_lateral = settings.MEMORY_LINK_LATERAL_INHIBITION
+        lateral_k = settings.MEMORY_LINK_LATERAL_K
+
+        active_nodes = set(seed_ids)
+
+        for iteration in range(max_iter):
+            # Compute propagation deltas
+            deltas: dict[str, float] = {}
+
+            for node_id in active_nodes:
+                node_activation = activation.get(node_id, 0.0)
+                if node_activation < 0.01:
+                    continue
+
+                neighbors = adjacency.get(node_id, [])
+                if not neighbors:
+                    continue
+
+                out_degree = len(neighbors)
+
+                for neighbor_id, edge_strength in neighbors:
+                    if neighbor_id in seed_ids:
+                        continue  # Don't propagate back to seeds
+
+                    propagated = node_activation * edge_strength * decay_rate
+
+                    # Fan Effect: divide by out-degree to dilute hub influence
+                    if use_fan:
+                        propagated /= out_degree
+
+                    # Multiply by target importance (indirect temporal decay)
+                    target_imp = importance_map.get(neighbor_id, 0.5)
+                    propagated *= target_imp
+
+                    deltas[neighbor_id] = deltas.get(neighbor_id, 0.0) + propagated
+
+            # Apply deltas
+            if not deltas:
+                break
+
+            newly_activated = []
+            for nid, delta in deltas.items():
+                activation[nid] = activation.get(nid, 0.0) + delta
+                if nid not in active_nodes:
+                    newly_activated.append(nid)
+                    active_nodes.add(nid)
+
+            if not newly_activated:
+                break
+
+            # Lateral Inhibition: only keep Top-K by activation value
+            if use_lateral and len(active_nodes) > lateral_k:
+                non_seed = [nid for nid in active_nodes if nid not in seed_ids]
+                if non_seed:
+                    non_seed.sort(key=lambda nid: activation.get(nid, 0.0), reverse=True)
+                    # Keep only top lateral_k non-seed nodes
+                    suppressed = set(non_seed[lateral_k:])
+                    for nid in suppressed:
+                        del activation[nid]
+                        active_nodes.discard(nid)
+
+            logger.debug(
+                f"Activation spread iter {iteration + 1}: "
+                f"{len(deltas)} nodes received signal, "
+                f"{len(active_nodes)} total active"
+            )
+
+        # Filter by threshold and exclude seeds
+        threshold = settings.MEMORY_LINK_ACTIVATION_THRESHOLD
+        result_ids = [
+            nid for nid in active_nodes
+            if nid not in seed_ids and activation.get(nid, 0) >= threshold
+        ]
+
+        if not result_ids:
+            return []
+
+        # Build result list with full memory data
+        result_ph = ",".join(["%s"] * len(result_ids))
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"SELECT id, content, memory_type, importance, valence, confidence, access_count "
+                    f"FROM memories WHERE id IN ({result_ph}) AND is_invalid = 0",
+                    tuple(result_ids),
+                )
+                result_rows = await cur.fetchall()
+
+        linked_memories = []
+        for r in result_rows:
+            act = activation.get(r["id"], 0.0)
+            # Access factor boost (ACT-R inspired)
+            access_count = int(r.get("access_count", 0) or 0)
+            access_factor = 0.5 + 0.5 * min(1.0, access_count / 10.0)
+            effective_importance = float(r.get("importance", 0.5)) * access_factor
+
+            linked_memories.append({
+                "id": r["id"],
+                "content": r["content"],
+                "distance": 1.0 - act,  # Use activation as similarity proxy
+                "metadata": {
+                    "category": r.get("memory_type") or "fact",
+                    "importance": float(r.get("importance", 0.5)),
+                    "memory_type": r.get("memory_type") or "fact",
+                    "valence": float(r["valence"]) if r.get("valence") is not None else None,
+                    "confidence": float(r["confidence"]) if r.get("confidence") is not None else 0.5,
+                },
+                "_activation": act,
+                "_via_link": True,
+                "_access_factor": access_factor,
+                "_effective_importance": effective_importance,
+            })
+
+        # Sort by activation descending (highest activation first)
+        linked_memories.sort(key=lambda m: m.get("_activation", 0), reverse=True)
+        logger.info(f"Activation spread: {len(seed_ids)} seeds → {len(linked_memories)} recalled")
+        return linked_memories
 
     async def _build_layered_memory(self, recalled: list) -> dict:
         """Transform recalled memories into a layered structure.
@@ -453,6 +865,22 @@ class MemoryManager:
                 "memory_type": mem["memory_type"],
                 "created_at_relative": _relative_time(mem["id"]),
             })
+
+        # Sort remaining memories by triple hybrid score (semantic + activation + importance)
+        def _relevance_score(mem: dict) -> float:
+            """Triple Hybrid Score: semantic × 0.5 + activation × 0.3 + importance × 0.2."""
+            semantic = 1.0 - mem.get("distance", 1.0)
+            importance = float(mem.get("metadata", {}).get("importance", 0.5))
+            activation = mem.get("_activation", 1.0 if not mem.get("_via_link") else 0.0)
+            # Direct-hit memories (not via link) get full activation credit
+            if not mem.get("_via_link"):
+                activation = max(activation, 1.0)
+            # Access factor boost
+            access_factor = mem.get("_access_factor", 1.0)
+            effective_importance = importance * access_factor
+            return semantic * 0.5 + activation * 0.3 + effective_importance * 0.2
+
+        remaining.sort(key=_relevance_score, reverse=True)
 
         # Process remaining memories by type
         for mem in remaining:
@@ -572,20 +1000,19 @@ class MemoryManager:
 
         for mem in classified:
             try:
-                mem0.add(
-                    mem["content"],
-                    user_id=_MEM0_USER_ID,
-                    metadata={
-                        "source_conversation_id": conversation_id,
-                        "memory_type": mem["memory_type"],
-                        "valence": mem.get("valence", 0.0),
-                        "importance": mem.get("importance", 0.5),
-                        "confidence": mem.get("confidence", 0.5),
-                    },
-                    infer=False,
+                metadata = {
+                    "source_conversation_id": conversation_id,
+                    "memory_type": mem["memory_type"],
+                    "valence": mem.get("valence", 0.0),
+                    "importance": mem.get("importance", 0.5),
+                    "confidence": mem.get("confidence", 0.5),
+                }
+                is_merged = mem.get("_merged", False)
+                await self._mem0_dedup_check(
+                    mem["content"], mem["id"], metadata, is_merged
                 )
             except Exception as e:
-                logger.warning(f"mem0.add(infer=False) failed for memory: {e}")
+                logger.warning(f"mem0 sync failed for memory: {e}")
 
         return classified
 
@@ -662,6 +1089,29 @@ class MemoryManager:
             if not content:
                 continue
 
+            # Dedup check: skip or merge if duplicate exists
+            if settings.MEMORY_DEDUP_ENABLED:
+                dedup_result = await self._deduplicate_user_memory(content, memory_type)
+                if dedup_result:
+                    if dedup_result["action"] == "merge" and dedup_result.get("merged_content"):
+                        existing_id = dedup_result["id"]
+                        merged_content = dedup_result["merged_content"]
+                        async with pool.acquire() as conn:
+                            async with conn.cursor() as cur:
+                                await cur.execute(
+                                    "UPDATE memories SET content = %s WHERE id = %s",
+                                    (merged_content, existing_id),
+                                )
+                        # Update cache
+                        _invalidate_user_mem_cache()
+                        stored.append({
+                            "id": existing_id, "content": merged_content,
+                            "category": memory_type, "memory_type": memory_type,
+                            "valence": valence, "confidence": confidence,
+                            "_merged": True,
+                        })
+                    continue  # both skip and merge skip new insertion
+
             mem_id = _generate_id()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -679,6 +1129,16 @@ class MemoryManager:
                 "valence": valence, "confidence": confidence,
             })
 
+            # Update dedup cache with new entry
+            try:
+                model = _get_embedding_model()
+                _user_mem_embedding_cache[mem_id] = {
+                    "emb": model.encode(content).tolist(),
+                    "content": content,
+                }
+            except Exception:
+                pass
+
         # Store self-memories (with embedding dedup)
         if self_memories_raw:
             await self._store_self_memories(
@@ -687,6 +1147,10 @@ class MemoryManager:
 
         if stored:
             logger.info(f"Extracted {len(stored)} user memories from conversation {conversation_id[:8]}")
+
+        # Create co-occurrence links between same-batch memories
+        if settings.MEMORY_LINK_ENABLED and len(stored) >= 2:
+            await self._create_co_occurrence_links(stored)
 
         # Apply memory corrections
         if corrections_raw:
@@ -751,6 +1215,10 @@ class MemoryManager:
                                  conversation_id, mem_type, 0.0, 0.0, "", 0.8),
                             )
 
+                    # Inherit links from old memory to corrected version
+                    if settings.MEMORY_LINK_ENABLED:
+                        await self._inherit_links(memory_id, new_id)
+
                     # Update mem0: delete old, add new
                     if settings.MEM0_ENABLED:
                         try:
@@ -805,6 +1273,7 @@ class MemoryManager:
 
         if corrected_count:
             logger.info(f"Applied {corrected_count} memory correction(s) in conversation {conversation_id[:8]}")
+            _invalidate_user_mem_cache()
 
     async def _store_self_memories(
         self,
@@ -940,30 +1409,69 @@ class MemoryManager:
         return memories
 
     async def _search_via_mysql(self, query: str, top_k: int) -> list:
-        """Fallback: return recent high-importance memories from MySQL.
-        Includes consolidated memories with high importance (e.g. merged name facts)."""
+        """Fallback: use local embedding (bge-small-zh) for semantic search in MySQL."""
         pool = await get_pool()
+
+        # Try embedding-based semantic search
+        try:
+            model = _get_embedding_model()
+            query_emb = model.encode(query).tolist()
+        except Exception:
+            logger.warning("Embedding model unavailable, falling back to importance sort")
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id, content, category, importance, "
+                        "memory_type, valence, confidence, access_count "
+                        "FROM memories "
+                        "WHERE importance > 0.2 AND is_invalid = 0 "
+                        "ORDER BY importance DESC LIMIT %s",
+                        (top_k,),
+                    )
+                    rows = await cur.fetchall()
+            return [
+                {"id": r["id"], "content": r["content"], "distance": 0.0,
+                 "metadata": {
+                     "category": r["category"],
+                     "importance": r["importance"],
+                     "memory_type": r.get("memory_type") or r["category"],
+                     "valence": float(r["valence"]) if r.get("valence") is not None else None,
+                     "confidence": float(r["confidence"]) if r.get("confidence") is not None else 0.5,
+                 }}
+                for r in rows
+            ]
+
+        # Load candidate memories (limit to 200 for performance)
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT id, content, category, importance, "
-                    "memory_type, valence, confidence "
-                    "FROM memories "
-                    "WHERE importance > 0.2 AND is_invalid = 0 "
-                    "ORDER BY importance DESC LIMIT %s",
-                    (top_k,),
+                    "SELECT id, content, memory_type, importance, valence, confidence, access_count "
+                    "FROM memories WHERE is_invalid = 0 AND importance > 0.1 "
+                    "ORDER BY last_accessed DESC LIMIT 200"
                 )
-                rows = await cur.fetchall()
+                candidates = await cur.fetchall()
+
+        # Compute cosine similarity for each candidate
+        scored = []
+        for r in candidates:
+            try:
+                cand_emb = model.encode(r["content"]).tolist()
+                sim = _cosine_similarity(query_emb, cand_emb)
+            except Exception:
+                sim = 0.0
+            scored.append((sim, r))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
         return [
-            {"id": r["id"], "content": r["content"], "distance": 0.0,
+            {"id": r["id"], "content": r["content"], "distance": 1.0 - sim,
              "metadata": {
-                 "category": r["category"],
-                 "importance": r["importance"],
-                 "memory_type": r.get("memory_type") or r["category"],
+                 "category": r.get("memory_type") or "fact",
+                 "importance": float(r["importance"]),
+                 "memory_type": r.get("memory_type") or "fact",
                  "valence": float(r["valence"]) if r.get("valence") is not None else None,
                  "confidence": float(r["confidence"]) if r.get("confidence") is not None else 0.5,
              }}
-            for r in rows
+            for sim, r in scored[:top_k]
         ]
 
     # ── Self-memories ──
@@ -1236,6 +1744,202 @@ class MemoryManager:
             })
         return results
 
+    # ── Memory graph: link creation ──
+
+    async def _create_co_occurrence_links(self, stored: list):
+        """为同一轮提取的记忆创建共现链接（co_occurrence）。"""
+        strength = settings.MEMORY_LINK_CO_OCCURRENCE_STRENGTH
+        pool = await get_pool()
+        for i, mem_a in enumerate(stored):
+            for mem_b in stored[i + 1:]:
+                try:
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                "INSERT IGNORE INTO memory_links "
+                                "(id, source_id, target_id, link_type, strength) "
+                                "VALUES (%s, %s, %s, 'co_occurrence', %s)",
+                                (_generate_id(), mem_a["id"], mem_b["id"], strength),
+                            )
+                except Exception as e:
+                    logger.debug(f"Failed to create co_occurrence link: {e}")
+
+    async def _inherit_links(self, old_id: str, new_id: str, exclude_ids: set = None):
+        """将 old_id 的所有链接重新指向 new_id，排除指定 ID。"""
+        exclude_ids = exclude_ids or set()
+        pool = await get_pool()
+        decay = settings.MEMORY_LINK_STRENGTH_DECAY_ON_INHERIT
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    # Forward links: old → target becomes new → target
+                    if exclude_ids:
+                        placeholders = ",".join(["%s"] * len(exclude_ids))
+                        await cur.execute(
+                            f"INSERT IGNORE INTO memory_links "
+                            f"(id, source_id, target_id, link_type, strength) "
+                            f"SELECT %s, %s, target_id, link_type, strength * %s "
+                            f"FROM memory_links "
+                            f"WHERE source_id = %s AND target_id NOT IN ({placeholders})",
+                            (_generate_id(), new_id, decay, old_id, *exclude_ids),
+                        )
+                    else:
+                        await cur.execute(
+                            "INSERT IGNORE INTO memory_links "
+                            "(id, source_id, target_id, link_type, strength) "
+                            "SELECT %s, %s, target_id, link_type, strength * %s "
+                            "FROM memory_links WHERE source_id = %s",
+                            (_generate_id(), new_id, decay, old_id),
+                        )
+
+                    # Backward links: source → old becomes source → new
+                    if exclude_ids:
+                        await cur.execute(
+                            f"INSERT IGNORE INTO memory_links "
+                            f"(id, source_id, target_id, link_type, strength) "
+                            f"SELECT %s, source_id, %s, link_type, strength * %s "
+                            f"FROM memory_links "
+                            f"WHERE target_id = %s AND source_id NOT IN ({placeholders})",
+                            (_generate_id(), new_id, decay, old_id, *exclude_ids),
+                        )
+                    else:
+                        await cur.execute(
+                            "INSERT IGNORE INTO memory_links "
+                            "(id, source_id, target_id, link_type, strength) "
+                            "SELECT %s, source_id, %s, link_type, strength * %s "
+                            "FROM memory_links WHERE target_id = %s",
+                            (_generate_id(), new_id, decay, old_id),
+                        )
+
+                    # Create direct link between new and old (consolidated type)
+                    await cur.execute(
+                        "INSERT IGNORE INTO memory_links "
+                        "(id, source_id, target_id, link_type, strength) "
+                        "VALUES (%s, %s, %s, 'consolidated', %s)",
+                        (_generate_id(), new_id, old_id,
+                         settings.MEMORY_LINK_CONSOLIDATION_STRENGTH),
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to inherit links {old_id} → {new_id}: {e}")
+
+    # ── Memory dedup (pre-insert) ──
+
+    async def _get_user_mem_cache(self) -> dict:
+        """Return the user memory embedding cache, loading if needed."""
+        global _user_mem_cache_valid
+        if not _user_mem_cache_valid or not _user_mem_embedding_cache:
+            await _load_user_mem_cache()
+        return _user_mem_embedding_cache
+
+    async def _deduplicate_user_memory(self, content: str, memory_type: str) -> dict:
+        """Check if a new memory duplicates an existing one.
+
+        Returns:
+            {"action": "skip", "id": ...}                          — >0.90 duplicate, skip
+            {"action": "merge", "id": ..., "merged_content": ...}  — 0.75-0.90, merge
+            {}                                                      — not duplicate, proceed
+        """
+        cache = await self._get_user_mem_cache()
+        if not cache:
+            return {}
+
+        model = _get_embedding_model()
+        new_emb = model.encode(content).tolist()
+
+        best_sim = 0.0
+        best_id = None
+        best_content = None
+
+        for mem_id, entry in cache.items():
+            sim = _cosine_similarity(new_emb, entry["emb"])
+            if sim > best_sim:
+                best_sim = sim
+                best_id = mem_id
+                best_content = entry["content"]
+
+        if best_sim > settings.MEMORY_DEDUP_SKIP_THRESHOLD:
+            logger.info(f"Dedup skip (sim={best_sim:.2f}): {content[:50]}")
+            return {"action": "skip", "id": best_id}
+
+        if best_sim > settings.MEMORY_DEDUP_MERGE_THRESHOLD:
+            if settings.MEMORY_DEDUP_MERGE_STRATEGY == "update":
+                merged = await self._merge_two_memories(best_content, content, memory_type)
+                logger.info(f"Dedup merge (sim={best_sim:.2f}): {content[:50]} → {best_id}")
+                return {"action": "merge", "id": best_id, "merged_content": merged}
+            else:
+                # boost strategy
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE memories SET importance = LEAST(importance + 0.05, 1.0) WHERE id = %s",
+                            (best_id,),
+                        )
+                logger.info(f"Dedup boost (sim={best_sim:.2f}): {content[:50]} → {best_id}")
+                return {"action": "skip", "id": best_id}
+
+        return {}
+
+    async def _merge_two_memories(self, old_content: str, new_content: str, memory_type: str) -> str:
+        """Use LLM to merge two similar memories into a more complete version."""
+        from app.core.llm import generate_completion
+        prompt = (
+            "将以下两条关于用户的相似信息合并为一条更完整、更准确的记忆。\n"
+            "保持简洁，不要添加推测。如果新信息补充了旧信息的细节，整合在一起。\n"
+            "如果新信息与旧信息矛盾，以新信息为准。\n"
+            "严格控制长度：不超过80个字。\n\n"
+            f"旧：{old_content}\n新：{new_content}\n\n直接输出合并后的记忆内容："
+        )
+        try:
+            result = await generate_completion(
+                messages=[{"role": "user", "content": prompt}], temperature=0.1,
+                max_tokens=150,
+            )
+            merged = result.strip()
+            if len(merged) > 100:
+                for sep in ["。", "！", "？", ".", "!", "?"]:
+                    cut = merged.rfind(sep)
+                    if cut > 20:
+                        merged = merged[:cut + 1]
+                        break
+                else:
+                    merged = merged[:100]
+            if len(merged) > 120:
+                merged = merged[:117] + "..."
+            return merged if merged else new_content
+        except Exception:
+            return new_content
+
+    async def _mem0_dedup_check(self, content: str, mem_id: str, metadata: dict, is_merged: bool = False):
+        """Before writing to mem0, check ChromaDB for duplicates."""
+        if not settings.MEM0_ENABLED:
+            return
+        mem0 = _get_mem0()
+        try:
+            results = mem0.search(content, filters={"user_id": _MEM0_USER_ID}, top_k=1)
+        except Exception:
+            # search failed, fall through to normal add
+            pass
+        else:
+            if results and "results" in results and results["results"]:
+                top = results["results"][0]
+                top_id = top.get("id", "")
+                top_score = top.get("score", 0.0)
+                if top_score > 0.90 and top_id:
+                    try:
+                        mem0.update(top_id, text=content, metadata=metadata)
+                        logger.info(f"mem0 dedup update (score={top_score:.2f}): {content[:50]}")
+                        return
+                    except Exception:
+                        pass
+
+        # No duplicate found or update failed — normal add
+        try:
+            mem0.add(content, user_id=_MEM0_USER_ID, metadata=metadata, infer=False)
+        except Exception as e:
+            logger.warning(f"mem0.add(infer=False) failed: {e}")
+
     # ── Memory consolidation ──
 
     async def consolidate_memories(self) -> int:
@@ -1328,6 +2032,11 @@ class MemoryManager:
                              memory_type),
                         )
 
+                # Inherit links from all source memories to consolidated memory
+                if settings.MEMORY_LINK_ENABLED:
+                    for old_id in source_ids:
+                        await self._inherit_links(old_id, new_id, exclude_ids=set(source_ids))
+
                 # Sync with mem0: add new, delete old
                 if settings.MEM0_ENABLED:
                     try:
@@ -1351,6 +2060,7 @@ class MemoryManager:
 
         if consolidated_count:
             logger.info(f"Memory consolidation: created {consolidated_count} consolidated memories")
+            _invalidate_user_mem_cache()
 
         return consolidated_count
 
@@ -1378,20 +2088,225 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 if category:
                     await cur.execute(
-                        "SELECT id, content, category, importance, created_at, access_count "
+                        "SELECT id, content, category, memory_type, importance, valence, confidence, created_at, access_count "
                         "FROM memories WHERE category = %s AND is_invalid = 0 "
                         "ORDER BY importance DESC LIMIT %s",
                         (category, limit),
                     )
                 else:
                     await cur.execute(
-                        "SELECT id, content, category, importance, created_at, access_count "
+                        "SELECT id, content, category, memory_type, importance, valence, confidence, created_at, access_count "
                         "FROM memories WHERE is_invalid = 0 "
                         "ORDER BY importance DESC LIMIT %s",
                         (limit,),
                     )
                 rows = await cur.fetchall()
         return rows
+
+    # ── Sleep cleanup ──
+
+    async def sleep_cleanup(self) -> dict:
+        """Daily memory cleanup: remove ChromaDB junk + cluster-merge similar memories."""
+        result = {"orphan_deleted": 0, "invalid_deleted": 0, "clusters_merged": 0}
+        pool = await get_pool()
+
+        if settings.MEMORY_SLEEP_CLEANUP_ORPHAN_REMOVAL and settings.MEM0_ENABLED:
+            # Collect stale IDs
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT id FROM memories WHERE is_invalid = 1 OR is_consolidated = 1"
+                    )
+                    stale_ids = {row[0] for row in await cur.fetchall()}
+
+            mem0 = _get_mem0()
+            all_mem0 = mem0.get_all(filters={"user_id": _MEM0_USER_ID})
+            if all_mem0 and "results" in all_mem0:
+                # Delete stale entries from ChromaDB
+                for m in all_mem0["results"]:
+                    mid = m.get("id", "")
+                    if mid in stale_ids:
+                        try:
+                            mem0.delete(mid)
+                            result["invalid_deleted"] += 1
+                        except Exception:
+                            pass
+
+                # Delete orphans: in ChromaDB but not in MySQL
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT id FROM memories WHERE is_invalid = 0 AND is_consolidated = 0"
+                        )
+                        valid_ids = {row[0] for row in await cur.fetchall()}
+
+                for m in all_mem0["results"]:
+                    mid = m.get("id", "")
+                    if mid and mid not in valid_ids and mid not in stale_ids:
+                        try:
+                            mem0.delete(mid)
+                            result["orphan_deleted"] += 1
+                        except Exception:
+                            pass
+
+        # Cluster-merge similar memories
+        if settings.MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE:
+            result["clusters_merged"] = await self._cluster_merge_memories()
+
+        # Refresh cache
+        _invalidate_user_mem_cache()
+
+        # Record last cleanup time
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO app_settings (`key`, value) VALUES ('last_sleep_cleanup', %s) "
+                    "ON DUPLICATE KEY UPDATE value = %s",
+                    (datetime.now().isoformat(), datetime.now().isoformat()),
+                )
+
+        logger.info(f"Sleep cleanup complete: {result}")
+        return result
+
+    async def _cluster_merge_memories(self) -> int:
+        """Cluster-merge similar memories within each type (similarity > threshold)."""
+        from app.core.llm import generate_completion
+
+        pool = await get_pool()
+        merged_count = 0
+        model = _get_embedding_model()
+        threshold = settings.MEMORY_SLEEP_CLEANUP_CLUSTER_THRESHOLD
+
+        for memory_type in ["fact", "preference", "event", "episodic", "emotion", "procedural"]:
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id, content, importance FROM memories "
+                        "WHERE memory_type = %s AND is_invalid = 0 AND is_consolidated = 0 "
+                        "ORDER BY importance DESC",
+                        (memory_type,),
+                    )
+                    rows = await cur.fetchall()
+
+            if len(rows) < 3:
+                continue
+
+            # Encode all memories
+            embeddings = {}
+            for r in rows:
+                embeddings[r["id"]] = model.encode(r["content"]).tolist()
+
+            # Greedy clustering
+            merged_ids = set()
+            for i, row_a in enumerate(rows):
+                if row_a["id"] in merged_ids:
+                    continue
+                cluster = [row_a]
+                for j in range(i + 1, len(rows)):
+                    row_b = rows[j]
+                    if row_b["id"] in merged_ids:
+                        continue
+                    sim = _cosine_similarity(
+                        embeddings[row_a["id"]], embeddings[row_b["id"]]
+                    )
+                    if sim > threshold:
+                        cluster.append(row_b)
+
+                if len(cluster) < 3:
+                    continue
+
+                # LLM merge
+                cluster_text = "\n".join(
+                    f"- {r['content']}" for r in cluster
+                )
+                prompt = (
+                    f"以下{len(cluster)}条记忆内容高度相似，请合并为一条更完整准确的记忆。\n"
+                    "提取共同核心信息，去掉重复部分。严格控制长度：不超过100个字。\n"
+                    f"{cluster_text}\n直接输出合并后的内容："
+                )
+                try:
+                    merged_content = await generate_completion(
+                        messages=[{"role": "user", "content": prompt}], temperature=0.1,
+                        max_tokens=200,
+                    )
+                    merged_content = merged_content.strip()
+                    if not merged_content:
+                        continue
+                    # Detect truncation: LLM may cut mid-sentence
+                    if len(merged_content) > 130:
+                        # Find last complete sentence
+                        for sep in ["。", "！", "？", ".", "!", "?"]:
+                            cut = merged_content.rfind(sep)
+                            if cut > 20:
+                                merged_content = merged_content[:cut + 1]
+                                break
+                        else:
+                            merged_content = merged_content[:130]
+                    if len(merged_content) > 150:
+                        merged_content = merged_content[:147] + "..."
+                except Exception:
+                    continue
+
+                new_id = _generate_id()
+                max_importance = max(float(r["importance"]) for r in cluster)
+                source_ids = [r["id"] for r in cluster]
+
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        placeholders = ",".join(["%s"] * len(source_ids))
+                        await cur.execute(
+                            f"UPDATE memories SET is_consolidated = 1 WHERE id IN ({placeholders})",
+                            tuple(source_ids),
+                        )
+                        # Verify source_conversation_id still exists (FK constraint)
+                        src_conv_id = source_ids[0]
+                        async with conn.cursor() as chk_cur:
+                            await chk_cur.execute(
+                                "SELECT 1 FROM conversations WHERE id = %s", (src_conv_id,)
+                            )
+                            if not await chk_cur.fetchone():
+                                src_conv_id = None
+
+                        await cur.execute(
+                            "INSERT INTO memories (id, content, category, importance, "
+                            "original_importance, is_consolidated, consolidated_from, "
+                            "source_conversation_id, memory_type) "
+                            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s)",
+                            (new_id, merged_content, memory_type, max_importance,
+                             max_importance,
+                             json.dumps(source_ids, ensure_ascii=False),
+                             src_conv_id, memory_type),
+                        )
+
+                # Sync mem0
+                if settings.MEM0_ENABLED:
+                    try:
+                        mem0 = _get_mem0()
+                        mem0.add(
+                            merged_content, user_id=_MEM0_USER_ID,
+                            metadata={"category": memory_type, "memory_type": memory_type,
+                                     "importance": max_importance},
+                            infer=False,
+                        )
+                        for old_id in source_ids:
+                            mem0.delete(old_id)
+                    except Exception:
+                        pass
+
+                # Inherit links
+                if settings.MEMORY_LINK_ENABLED:
+                    for old_id in source_ids:
+                        await self._inherit_links(old_id, new_id, exclude_ids=set(source_ids))
+
+                for r in cluster:
+                    merged_ids.add(r["id"])
+                merged_count += 1
+                logger.info(
+                    f"Cluster merge ({memory_type}): {len(cluster)} → 1 "
+                    f"[{merged_content[:60]}]"
+                )
+
+        return merged_count
 
     async def delete_memory(self, memory_id: str):
         """Delete memory from both MySQL and mem0."""
@@ -1407,5 +2322,28 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(f"mem0.delete() failed for {memory_id}: {e}")
 
+        _invalidate_user_mem_cache()
+
 
 memory_manager = MemoryManager()
+
+
+# ── Sleep cleanup (daily automatic memory maintenance) ──
+
+async def sleep_cleanup_background_task():
+    """Background task: run sleep cleanup once per day at the configured hour."""
+    import asyncio
+    await asyncio.sleep(60)  # wait 1 min after startup
+
+    while True:
+        try:
+            now = datetime.now()
+            target_hour = settings.MEMORY_SLEEP_CLEANUP_HOUR
+            if (settings.MEMORY_SLEEP_CLEANUP_ENABLED
+                    and now.hour == target_hour and now.minute < 5):
+                manager = MemoryManager()
+                result = await manager.sleep_cleanup()
+                logger.info(f"Sleep cleanup done: {result}")
+        except Exception as e:
+            logger.error(f"Sleep cleanup task error: {e}")
+        await asyncio.sleep(3600)  # check every hour

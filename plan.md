@@ -41,6 +41,11 @@
 - [x] Self-memory embedding 语义去重：本地 bge cosine similarity（>0.85 跳过，0.6-0.85 强化已有 memory）
 - [x] Self-memory 定期合并：embedding 聚类（> 0.75）+ LLM 合并 ≥ 3 条相似自我记忆，is_consolidated 标记
 - [x] mem0 全量同步：启动时同步所有 MySQL 记忆到 mem0（包括 consolidated），完整 metadata（type/valence/confidence），排除 None 值
+- [x] mem0 同步防重复：`mem0_sync_done` 标志位防止 `--reload` 重启重复同步
+- [x] 记忆关联网络（Memory Graph）：co_occurrence 建链 + 合并/纠正继承 + 激活传播扩散召回
+- [x] Triple Hybrid Scoring：语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2
+- [x] 写入去重：bge embedding 比对（> 0.90 跳过，0.75-0.90 LLM 合并）+ mem0 ChromaDB pre-check
+- [x] 睡眠清理：每天凌晨 4 点自动清理 ChromaDB 孤儿 + 同类型聚类合并
 - [x] 错误记忆纠正：LLM 检测用户信息与已有记忆矛盾，旧记忆标记 is_invalid，正确版本插入
 - [x] 失效记忆过滤：所有记忆召回查询排除 is_invalid=1 的记忆
 
@@ -101,7 +106,7 @@
 - [x] LLM 生成符合人设的主动消息（temperature=0.8）
 - [x] Rate limiting：两次主动消息间隔 ≥ 3 小时
 - [x] 安静时段（0-7 点）不发送
-- [x] SSE 推送：EventSource 长连接 + 30 秒 keep-alive
+- [x] SSE 推送：EventSource 长连接 + 30 秒 keep-alive + 断连检测（Ctrl+C 优雅退出）
 - [x] 离线兜底：`/api/proactive/recent` 页面刷新时补发
 - [x] 心情集成：缺席时应用心情衰减
 
@@ -117,11 +122,12 @@
 - [x] MessageBubble：消息气泡（\n\n 多气泡拆分，空消息/"..." 不渲染）
 - [x] SearchPanel：历史消息搜索（右侧滑入面板，防抖 300ms，关键词高亮，点击跳转定位）
 - [x] InputBar：消息输入框
-- [x] Header：标题栏（语言切换 + 搜索入口 + 设置按钮）
-- [x] Layout：页面布局（搜索面板状态管理）
+- [x] Header：标题栏（语言切换 + 搜索入口 + 设置按钮 + 调试面板入口）
+- [x] Layout：页面布局（搜索面板状态管理 + 调试面板状态管理）
 - [x] EmotionDisplay：情绪显示
 - [x] SettingsModal：设置面板
 - [x] Sidebar：对话列表侧栏
+- [x] MemoryDebugPanel：记忆调试面板（4 tabs：概览/记忆列表/召回调试/关联图 SVG）
 
 ### 数据库 Bug 修复
 - [x] `user_preferences`：SELECT 缺少 `created_at`/`updated_at` 列
@@ -134,6 +140,8 @@
 - [x] mem0 metadata：None 值导致 TypeError，修复为排除 None 字段
 - [x] 前端 SSE：chunk 边界分割导致 done 事件 JSON 解析失败（行缓冲修复）
 - [x] 前端 fallback handler：双重展开导致 cleaned 内容被 fullContent 覆盖
+- [x] 信息检索 hash 去重：Python `hash()` 跨进程不稳定导致重启后重复检索，改用 `hashlib.md5`
+- [x] mem0 metadata content 截断：bge-small-zh-v1.5 512 token 限制（~300 中文字），merge prompt 添加长度约束
 
 ### 文档
 - [x] README.md：完整架构说明 + 快速开始 + API 接口 + 配置参考
@@ -157,6 +165,61 @@
 | **无关系认知** | 待实现 | 对"我和这个人的关系"缺乏积累（L2 Relationship Awareness） |
 | **无变化感知** | 待实现 | 兴趣/观点演变追踪（L3 Self-Evolution） |
 | **维度单一** | 待实现 | 只有"说了什么"，缺少"为什么说"（触发情境、情感驱动力） |
+
+---
+
+## P0 — 记忆系统核心重构
+
+### 0. 记忆关联网络（Memory Graph）— 神经元式记忆链接
+
+当前记忆是扁平孤岛：每条记忆独立存储和召回，没有关联。人类记忆是网络结构——想起一条自动联想到相关条。
+
+**根因**：mem0 v2.0.0 开源包不支持 `add_relation()`（那是平台付费 API），需要自建关联系统。
+
+**核心改动**：
+
+#### 新增 `memory_links` 表
+```sql
+CREATE TABLE memory_links (
+    id CHAR(32) PRIMARY KEY,
+    source_id CHAR(32) NOT NULL,  -- 记忆A
+    target_id CHAR(32) NOT NULL,  -- 记忆B
+    link_type VARCHAR(32) DEFAULT 'co_occurrence',
+    strength FLOAT DEFAULT 0.5,
+    UNIQUE INDEX idx_pair (source_id, target_id)
+);
+```
+
+#### 3 种建链时机
+- [x] **共现建链**：同一轮 LLM 提取的记忆天然关联，写入时自动建 `co_occurrence` 链（strength=0.7）
+- [x] **合并继承链**：consolidate 合并后，新记忆继承所有来源记忆的链接，标记为 `consolidated`（strength=0.4）
+- [x] **纠正转移链**：correction 后，正确版本继承旧记忆的所有链接
+
+#### 关联扩散召回（联想扩散）
+- [x] `build_context()` 中：mem0.search() 返回后，BFS 沿链接扩散 1-2 跳，带回相关记忆
+- [x] 扩散结果与直接命中合并后进入分层注入
+- [x] `_activation_spread()`: 多轮迭代传播（Fan Effect + Lateral Inhibition）
+
+#### 综合评分排序
+- [x] 替代纯语义排序：Triple Hybrid Score = 语义(0.5) + 激活(0.3) + 重要性(0.2)
+- [x] ACT-R access_factor 加权
+
+#### MySQL fallback embedding 语义搜索
+- [x] `_search_via_mysql()` 改用本地 bge 做 cosine similarity 搜索（已加载的 `_get_embedding_model()`）
+- [x] 查询 200 条候选 → encode → cosine 排序 → top_k，替代纯 importance 排序
+
+#### 新增配置项
+```python
+MEMORY_LINK_ENABLED: bool = True
+MEMORY_LINK_MAX_HOPS: int = 2
+MEMORY_LINK_CO_OCCURRENCE_STRENGTH: float = 0.7
+MEMORY_LINK_SEMANTIC_THRESHOLD: float = 0.4
+```
+
+#### 涉及文件
+- `backend/app/core/memory.py` — 核心改动（建链 + 扩散 + 评分 + fallback + 合并继承）
+- `backend/app/db/database.py` — memory_links 表
+- `backend/app/config.py` — 配置项
 
 ---
 

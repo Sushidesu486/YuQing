@@ -13,6 +13,11 @@ body {
   background: #EDEDED;
 }
 
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
 /* WeChat scrollbar */
 ::-webkit-scrollbar {
   width: 4px;

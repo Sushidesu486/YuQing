@@ -10,6 +10,7 @@ from app.core.memory import init_mem0, sync_memories_to_mem0
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task
+from app.core.memory import sleep_cleanup_background_task
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,13 +30,15 @@ async def lifespan(app: FastAPI):
     # Start proactive background task
     task = asyncio.create_task(proactive_background_task())
     info_task = asyncio.create_task(info_retrieval_background_task())
+    cleanup_task = asyncio.create_task(sleep_cleanup_background_task())
 
     yield
 
     # Cancel background tasks on shutdown
     task.cancel()
     info_task.cancel()
-    for t in (task, info_task):
+    cleanup_task.cancel()
+    for t in (task, info_task, cleanup_task):
         try:
             await t
         except asyncio.CancelledError:

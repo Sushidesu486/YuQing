@@ -79,6 +79,31 @@ class Settings(BaseSettings):
     INFO_RETRIEVAL_KNOWLEDGE_EXPIRE_DAYS: int = 7  # knowledge expires after 7 days
     INFO_RETRIEVAL_REACTIVE_ENABLED: bool = True   # reactive search on demand
 
+    # Memory graph — Activation propagation (based on Synapse et al.)
+    MEMORY_LINK_ENABLED: bool = True
+    MEMORY_LINK_MAX_ITERATIONS: int = 3            # 激活传播最大迭代轮数
+    MEMORY_LINK_DECAY_RATE: float = 0.5            # 每跳激活衰减率（0-1，越小衰减越快）
+    MEMORY_LINK_FAN_EFFECT: bool = True            # 启用 Fan Effect（出度归一化）
+    MEMORY_LINK_LATERAL_INHIBITION: bool = True    # 启用 Lateral Inhibition（Top-K 竞争）
+    MEMORY_LINK_LATERAL_K: int = 15                # Lateral Inhibition 保留的 Top-K
+    MEMORY_LINK_ACTIVATION_THRESHOLD: float = 0.1  # 激活值低于此阈值的记忆不召回
+    MEMORY_LINK_CO_OCCURRENCE_STRENGTH: float = 0.7
+    MEMORY_LINK_CONSOLIDATION_STRENGTH: float = 0.4
+    MEMORY_LINK_STRENGTH_DECAY_ON_INHERIT: float = 0.8  # 继承链接时强度衰减系数
+
+    # Memory dedup
+    MEMORY_DEDUP_ENABLED: bool = True
+    MEMORY_DEDUP_SKIP_THRESHOLD: float = 0.90          # > 此值视为重复，跳过
+    MEMORY_DEDUP_MERGE_THRESHOLD: float = 0.75         # 0.75-0.90 区间合并到已有记忆
+    MEMORY_DEDUP_MERGE_STRATEGY: str = "update"        # "update" = LLM合并内容, "boost" = 仅提高重要性
+
+    # Sleep cleanup (daily automatic memory maintenance)
+    MEMORY_SLEEP_CLEANUP_ENABLED: bool = True
+    MEMORY_SLEEP_CLEANUP_HOUR: int = 4                 # 凌晨 4 点执行（模拟睡眠）
+    MEMORY_SLEEP_CLEANUP_ORPHAN_REMOVAL: bool = True   # 清理 ChromaDB 孤儿条目
+    MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE: bool = True    # 对聚类相似记忆做 LLM 合并
+    MEMORY_SLEEP_CLEANUP_CLUSTER_THRESHOLD: float = 0.70  # 聚类合并相似度阈值
+
     # Debug
     LOG_LEVEL: str = "INFO"
 

@@ -150,8 +150,16 @@
 
 **记忆召回**
 - 每次收到新消息，mem0 混合检索（语义相似度）召回最相关的记忆
+- **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），联想扩散到相关记忆
+- **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2，替代纯语义排序
 - 按类型分流到三个注入层
 - 休眠记忆（30天未访问）补充召回
+
+**记忆关联网络（Memory Graph）**
+- 同轮提取的记忆自动建链（co-occurrence，strength=0.7）
+- 记忆合并/纠正时继承链接（strength × 0.8 衰减）
+- MySQL fallback 改用本地 bge embedding 语义搜索
+- 详见 [docs/memory-graph.md](docs/memory-graph.md)
 
 **记忆生命周期**
 - **衰减**：长期不被访问的记忆重要性逐渐降低（90 天减半，每次召回"年轻"5天）
@@ -159,6 +167,9 @@
 - **休眠唤醒**：30 天未召回但语义相关的记忆会被主动消息系统重新激活
 - **自我记忆去重**：本地 bge embedding 语义去重（相似度 > 0.85 跳过，0.6-0.85 强化已有记忆）
 - **自我记忆合并**：embedding 聚类（> 0.75 归一组）+ LLM 合并 ≥ 3 条相似自我记忆为精炼总结
+- **写入去重**：新记忆写入前 bge embedding 比对已有记忆（> 0.90 跳过，0.75-0.90 LLM 合并），mem0 ChromaDB 也做 pre-check
+- **睡眠清理**：每天凌晨 4 点自动清理 ChromaDB 孤儿 + 同类型聚类合并（≥ 0.70 阈值）
+- 详见 [docs/memory-graph.md](docs/memory-graph.md)、[docs/memory-debug-panel.md](docs/memory-debug-panel.md)
 
 ### 2. 情感系统（用户情绪感知）
 
@@ -424,6 +435,7 @@ yuqing/
 | `app_settings` | 应用设置（KV）— 含自我叙事缓存、检索时间戳 |
 | `user_preferences` | 用户学习到的偏好 |
 | `knowledge_items` | 信息检索知识条目（带时效性，7 天过期） |
+| `memory_links` | 记忆关联链接（co_occurrence/consolidated，激活传播用） |
 
 ---
 
@@ -445,6 +457,18 @@ yuqing/
 | `MEMORY_BEHAVIOR_RULES_MAX` | 8 | 行为规则最大条数 |
 | `MEMORY_EPISODIC_MAX` | 3 | 情景记忆最大条数 |
 | `SELF_MEMORY_ENABLED` | true | 是否启用自我记忆 |
+
+### 记忆关联网络参数（.env）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `MEMORY_LINK_ENABLED` | true | 启用记忆关联网络（激活传播） |
+| `MEMORY_LINK_MAX_ITERATIONS` | 3 | 激活传播最大迭代轮数 |
+| `MEMORY_LINK_DECAY_RATE` | 0.5 | 每跳激活衰减率 |
+| `MEMORY_LINK_FAN_EFFECT` | true | 启用 Fan Effect（出度归一化） |
+| `MEMORY_LINK_LATERAL_INHIBITION` | true | 启用 Lateral Inhibition（Top-K 竞争） |
+| `MEMORY_LINK_LATERAL_K` | 15 | Lateral Inhibition 保留数 |
+| `MEMORY_LINK_ACTIVATION_THRESHOLD` | 0.1 | 激活值召回阈值 |
 
 ### 主动消息参数（.env）
 
@@ -497,6 +521,10 @@ yuqing/
 | GET | `/api/memories` | 所有长期记忆 |
 | GET | `/api/memories/search?q=xxx` | 语义搜索记忆 |
 | DELETE | `/api/memories/{id}` | 删除记忆 |
+| POST | `/api/memories/debug/recall` | 调试：传入消息，返回完整召回链路（mem0 → 激活传播 → 最终排序） |
+| GET | `/api/memories/debug/stats` | 调试：记忆系统状态概览（总数、链接数、类型分布） |
+| POST | `/api/memories/debug/cleanup` | 手动触发睡眠清理 |
+| GET | `/api/memories/links` | 所有记忆关联链接（调试面板用） |
 | POST | `/api/memories/trigger-info-retrieval` | 手动触发信息检索（调试用） |
 | GET | `/api/knowledge` | 查看当前未过期的知识条目 |
 

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime, timedelta
@@ -114,7 +115,7 @@ class InfoRetrievalEngine:
 
         for interest in interests:
             # Check last retrieval time for this topic
-            topic_key = f"info_retrieval_{hash(interest)}"
+            topic_key = f"info_retrieval_{hashlib.md5(interest.encode()).hexdigest()}"
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(

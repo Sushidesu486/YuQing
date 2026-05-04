@@ -135,6 +135,18 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     INDEX idx_topic_valid (topic, is_valid),
     INDEX idx_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS memory_links (
+    id CHAR(32) PRIMARY KEY,
+    source_id CHAR(32) NOT NULL,
+    target_id CHAR(32) NOT NULL,
+    link_type VARCHAR(32) NOT NULL DEFAULT 'co_occurrence',
+    strength FLOAT NOT NULL DEFAULT 0.5,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_source (source_id),
+    INDEX idx_target (target_id),
+    UNIQUE INDEX idx_pair (source_id, target_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 

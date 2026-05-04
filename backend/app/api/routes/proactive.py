@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.proactive import _proactive_queue
@@ -12,15 +12,22 @@ router = APIRouter(prefix="/api", tags=["proactive"])
 
 
 @router.get("/proactive/listen")
-async def proactive_listen():
+async def proactive_listen(request: Request):
     """SSE endpoint for frontend to receive proactive messages."""
 
     async def event_generator():
         while True:
+            if await request.is_disconnected():
+                logger.info("SSE client disconnected")
+                break
             try:
                 event = await asyncio.wait_for(_proactive_queue.get(), timeout=30)
+                if await request.is_disconnected():
+                    break
                 yield event
             except asyncio.TimeoutError:
+                if await request.is_disconnected():
+                    break
                 yield {"event": "ping", "data": ""}
 
     return EventSourceResponse(event_generator())
