@@ -527,7 +527,7 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
-        recalled_facts: list | None = None,
+        recalled_facts: Optional[list] = None,
     ) -> list:
         """Extract memorable facts, detect contradictions, and store them."""
         stored = []
@@ -550,7 +550,7 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
-        recalled_facts: list | None = None,
+        recalled_facts: Optional[list] = None,
     ) -> list:
         """Extract memories using LLM classification, store in mem0 (infer=False) + MySQL.
 
@@ -595,7 +595,7 @@ class MemoryManager:
         user_message: str,
         assistant_response: str,
         language: str = "zh",
-        recalled_facts: list | None = None,
+        recalled_facts: Optional[list] = None,
     ) -> list:
         """Use LLM to extract user memories, self-memories, and detect contradictions in one call."""
         from app.core.llm import generate_completion
