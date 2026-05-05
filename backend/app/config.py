@@ -28,9 +28,11 @@ class Settings(BaseSettings):
     AUTO_MEMORY_EXTRACTION: bool = True
 
     # Memory layered injection
-    MEMORY_FACT_TOP_K: int = 6
+    MEMORY_FACT_TOP_K: int = 8
     MEMORY_BEHAVIOR_RULES_MAX: int = 8
-    MEMORY_EPISODIC_MAX: int = 3
+    MEMORY_EPISODIC_MAX: int = 5
+    MEMORY_PINNED_FACTS_THRESHOLD: float = 0.7
+    MEMORY_PINNED_FACTS_MAX: int = 4
     SELF_MEMORY_ENABLED: bool = True
     MEMORY_CLASSIFY_ENABLED: bool = True
 
@@ -106,7 +108,7 @@ class Settings(BaseSettings):
     TEMPORAL_ENERGY_NIGHT_PENALTY: float = 0.05 # energy drop during late night
 
     # Embedding model (local BGE for semantic search)
-    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
 
     # Information retrieval (Tavily)
     TAVILY_API_KEY: str = ""
@@ -126,6 +128,10 @@ class Settings(BaseSettings):
     MEMORY_LINK_CO_OCCURRENCE_STRENGTH: float = 0.7
     MEMORY_LINK_CONSOLIDATION_STRENGTH: float = 0.4
     MEMORY_LINK_STRENGTH_DECAY_ON_INHERIT: float = 0.8  # 继承链接时强度衰减系数
+
+    # Memory extraction limits (per conversation turn)
+    MEMORY_EXTRACT_USER_LIMIT: int = 8
+    MEMORY_EXTRACT_SELF_LIMIT: int = 5
 
     # Memory dedup
     MEMORY_DEDUP_ENABLED: bool = True

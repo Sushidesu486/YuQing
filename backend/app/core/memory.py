@@ -280,8 +280,14 @@ class MemoryManager:
         for row in reversed(rows):
             messages_context.append({"role": row["role"], "content": row["content"]})
 
-        # 2. Search memories via bge embedding (top_k=10)
-        recalled = await self.search_memories(user_message, top_k=10)
+        # 2. Search memories via bge embedding (top_k=20)
+        # Use recent conversation context as query for better semantic matching
+        search_query = user_message
+        if len(messages_context) > 1:
+            # Include last 4 messages (2 user + 2 assistant) for richer context
+            recent = messages_context[-4:]
+            search_query = " ".join(m["content"] for m in recent)
+        recalled = await self.search_memories(search_query, top_k=20)
 
         # 3. Ensure pinned facts (importance >= 0.8) are always included
         pool = await get_pool()
@@ -289,9 +295,10 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence "
-                    "FROM memories WHERE importance >= 0.8 AND is_invalid = 0 "
+                    "FROM memories WHERE importance >= %s AND is_invalid = 0 "
                     "AND (memory_type NOT LIKE 'self_%' OR memory_type IS NULL) "
-                    "ORDER BY importance DESC LIMIT 10"
+                    "ORDER BY importance DESC LIMIT 10",
+                    (settings.MEMORY_PINNED_FACTS_THRESHOLD,)
                 )
                 pinned_rows = await cur.fetchall()
         recalled_ids = {r["id"] for r in recalled}
@@ -706,9 +713,14 @@ class MemoryManager:
             "emotion_influences": [],
         }
 
-        # Separate pinned facts (importance >= 0.8, memory_type=fact) and gather created_at
+        # Separate pinned facts (high importance fact memories) and gather created_at
         pinned_facts = []
         remaining = []
+        pinned_threshold = settings.MEMORY_PINNED_FACTS_THRESHOLD
+        pinned_max = settings.MEMORY_PINNED_FACTS_MAX
+        fact_max = settings.MEMORY_FACT_TOP_K
+        behavior_max = settings.MEMORY_BEHAVIOR_RULES_MAX
+        episodic_max = settings.MEMORY_EPISODIC_MAX
 
         for mem in recalled:
             metadata = mem.get("metadata", {})
@@ -717,7 +729,7 @@ class MemoryManager:
             mem["memory_type"] = memory_type
             mem["importance"] = importance
 
-            if memory_type == "fact" and importance >= 0.8 and len(pinned_facts) < 2:
+            if memory_type == "fact" and importance >= pinned_threshold and len(pinned_facts) < pinned_max:
                 pinned_facts.append(mem)
             else:
                 remaining.append(mem)
@@ -806,7 +818,7 @@ class MemoryManager:
             metadata = mem.get("metadata", {})
 
             if mt == "fact":
-                if len(layered["facts"]) < 5:  # total facts limit
+                if len(layered["facts"]) < fact_max:  # total facts limit
                     layered["facts"].append({
                         "id": mem["id"],
                         "content": content,
@@ -822,12 +834,13 @@ class MemoryManager:
                 })
 
             elif mt == "episodic":
-                valence = float(metadata.get("valence", 0))
-                layered["episodic"].append({
-                    "content": content,
-                    "valence": valence,
-                    "created_at_relative": _relative_time(mem["id"]),
-                })
+                if len(layered["episodic"]) < episodic_max:
+                    valence = float(metadata.get("valence", 0))
+                    layered["episodic"].append({
+                        "content": content,
+                        "valence": valence,
+                        "created_at_relative": _relative_time(mem["id"]),
+                    })
 
             elif mt == "emotion":
                 # Extract trigger patterns for emotion influences
@@ -842,11 +855,11 @@ class MemoryManager:
             elif mt in ("preference", "procedural"):
                 # Try to convert to behavior rules using regex patterns
                 rule = self._content_to_behavior_rule(content)
-                if rule:
+                if rule and len(layered["behavior_rules"]) < behavior_max:
                     layered["behavior_rules"].append(rule)
                 else:
                     # No pattern matched, keep as fact
-                    if len(layered["facts"]) < 5:
+                    if len(layered["facts"]) < fact_max:
                         layered["facts"].append({
                             "id": mem["id"],
                             "content": content,
@@ -944,7 +957,7 @@ class MemoryManager:
         # Store user memories
         stored = []
         pool = await get_pool()
-        for mem in user_memories_raw[:5]:
+        for mem in user_memories_raw[:settings.MEMORY_EXTRACT_USER_LIMIT]:
             content = mem.get("content", "").strip()
             memory_type = mem.get("memory_type") or mem.get("category", "general")
             _legacy_map = {"emotion_pattern": "emotion", "general": "fact"}
@@ -1008,7 +1021,7 @@ class MemoryManager:
         # Store self-memories (with embedding dedup)
         if self_memories_raw:
             await self._store_self_memories(
-                conversation_id, self_memories_raw[:3]
+                conversation_id, self_memories_raw[:settings.MEMORY_EXTRACT_SELF_LIMIT]
             )
 
         if stored:
@@ -1178,7 +1191,7 @@ class MemoryManager:
                         "SELECT id, content, category, importance, "
                         "memory_type, valence, confidence, access_count "
                         "FROM memories "
-                        "WHERE importance > 0.2 AND is_invalid = 0 "
+                        "WHERE importance > 0.05 AND is_invalid = 0 "
                         "ORDER BY importance DESC LIMIT %s",
                         (top_k,),
                     )
@@ -1200,9 +1213,9 @@ class MemoryManager:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence, access_count "
-                    "FROM memories WHERE is_invalid = 0 AND importance > 0.1 "
+                    "FROM memories WHERE is_invalid = 0 AND importance > 0.05 "
                     "AND memory_type NOT LIKE 'self_%' "
-                    "ORDER BY last_accessed DESC LIMIT 200"
+                    "ORDER BY importance DESC LIMIT 200"
                 )
                 candidates = await cur.fetchall()
 
@@ -1328,7 +1341,7 @@ class MemoryManager:
                     "last_accessed, access_count, created_at "
                     "FROM memories "
                     "WHERE (last_accessed IS NULL OR last_accessed < %s) "
-                    "AND importance > 0.2 "
+                    "AND importance > 0.1 "
                     "ORDER BY importance DESC "
                     "LIMIT 50",
                     (cutoff,),
