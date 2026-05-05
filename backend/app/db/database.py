@@ -110,19 +110,6 @@ CREATE TABLE IF NOT EXISTS yuqing_mood_log (
     INDEX idx_mood_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS self_memories (
-    id CHAR(32) PRIMARY KEY,
-    content TEXT NOT NULL,
-    memory_type VARCHAR(32) DEFAULT 'self_reflection',
-    importance FLOAT DEFAULT 0.5,
-    source_conversation_id CHAR(32) DEFAULT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    access_count INT DEFAULT 0,
-    is_consolidated TINYINT NOT NULL DEFAULT 0,
-    INDEX idx_type_importance (memory_type, importance),
-    INDEX idx_consolidated (is_consolidated)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS knowledge_items (
     id CHAR(32) PRIMARY KEY,
     topic VARCHAR(128) NOT NULL,
@@ -238,16 +225,6 @@ async def init_db():
                 )
                 logger.info("Migration: added column user_preferences.created_at")
 
-            # Migration: add is_consolidated to self_memories
-            await cur.execute("DESCRIBE self_memories")
-            sm_columns = {row[0] for row in await cur.fetchall()}
-            if "is_consolidated" not in sm_columns:
-                await cur.execute(
-                    "ALTER TABLE self_memories ADD COLUMN "
-                    "is_consolidated TINYINT NOT NULL DEFAULT 0"
-                )
-                logger.info("Migration: added column self_memories.is_consolidated")
-
             # Migration: add is_invalid to memories
             await cur.execute("DESCRIBE memories")
             mem_columns = {row[0] for row in await cur.fetchall()}
@@ -257,16 +234,6 @@ async def init_db():
                     "is_invalid TINYINT NOT NULL DEFAULT 0"
                 )
                 logger.info("Migration: added column memories.is_invalid")
-
-            # Migration: add is_invalid to self_memories
-            await cur.execute("DESCRIBE self_memories")
-            sm_cols = {row[0] for row in await cur.fetchall()}
-            if "is_invalid" not in sm_cols:
-                await cur.execute(
-                    "ALTER TABLE self_memories ADD COLUMN "
-                    "is_invalid TINYINT NOT NULL DEFAULT 0"
-                )
-                logger.info("Migration: added column self_memories.is_invalid")
 
             # Migration: backfill memory_type from category
             await cur.execute(
@@ -289,6 +256,42 @@ async def init_db():
                     await cur.execute(idx_sql)
                 except Exception:
                     pass
+
+            # Migration: migrate self_memories into memories table
+            try:
+                await cur.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = DATABASE() AND table_name = 'self_memories'"
+                )
+                if await cur.fetchone():
+                    # Check if migration already done
+                    await cur.execute(
+                        "SELECT COUNT(*) FROM memories WHERE category = 'self'"
+                    )
+                    existing_self = (await cur.fetchone())[0]
+
+                    await cur.execute("SELECT COUNT(*) FROM self_memories")
+                    total_self = (await cur.fetchone())[0]
+
+                    if existing_self < total_self:
+                        await cur.execute(
+                            "INSERT INTO memories (id, content, category, importance, "
+                            "original_importance, source_conversation_id, "
+                            "memory_type, valence, confidence, is_consolidated) "
+                            "SELECT id, content, 'self', importance, importance, "
+                            "source_conversation_id, memory_type, 0.0, 0.5, is_consolidated "
+                            "FROM self_memories "
+                            "WHERE NOT EXISTS ("
+                            "  SELECT 1 FROM memories WHERE memories.id = self_memories.id"
+                            ")"
+                        )
+                        migrated = cur.rowcount
+                        logger.info(f"Migration: migrated {migrated} self_memories into memories")
+
+                    await cur.execute("DROP TABLE IF EXISTS self_memories")
+                    logger.info("Migration: dropped self_memories table")
+            except Exception as e:
+                logger.warning(f"self_memories migration skipped: {e}")
 
     logger.info("Database tables initialized")
 

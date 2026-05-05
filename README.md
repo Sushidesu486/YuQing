@@ -142,15 +142,15 @@
          ├─ 用户记忆（7 种类型 + valence + confidence）
          │    → MySQL memories 表 → BGE embedding 语义搜索
          ├─ 自我记忆（4 种类型 + importance）
-         │    → embedding 语义去重（bge cosine similarity）
-         │    → MySQL self_memories 表
+         │    → MySQL memories 表（memory_type='self_*'，统一存储统一管道）
+         │    → embedding 语义去重 + 巩固，与用户记忆共享去重缓存
          └─ 纠正检测（corrections）
               → 标记旧记忆 is_invalid=1 → 插入正确版本
 ```
 
 **记忆召回**
 - 每次收到新消息，BGE embedding 语义检索（cosine similarity）召回最相关的记忆
-- **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），联想扩散到相关记忆
+- **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），加载 2 跳邻居实现真正的多轮扩散
 - **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2，替代纯语义排序
 - 按类型分流到三个注入层
 - 休眠记忆（30天未访问）补充召回
@@ -163,10 +163,10 @@
 
 **记忆生命周期**
 - **衰减**：长期不被访问的记忆重要性逐渐降低（90 天减半，每次召回"年轻"5天）
-- **巩固**：每 20 轮对话自动合并相关记忆（用户记忆 + 自我记忆分别合并）
+- **巩固**：每 20 轮对话自动合并相关记忆（统一管道处理所有类型，self_* 使用专用合并 prompt）
 - **休眠唤醒**：30 天未召回但语义相关的记忆会被主动消息系统重新激活
-- **自我记忆去重**：本地 bge embedding 语义去重（相似度 > 0.85 跳过，0.6-0.85 强化已有记忆）
-- **自我记忆合并**：embedding 聚类（> 0.75 归一组）+ LLM 合并 ≥ 3 条相似自我记忆为精炼总结
+- **自我记忆去重**：与用户记忆共享 embedding 缓存，统一去重逻辑
+- **自我记忆合并**：embedding 聚类 + LLM 合并（self_* 类型使用第一人称专用 prompt）
 - **写入去重**：新记忆写入前 bge embedding 比对已有记忆（> 0.90 跳过，0.75-0.90 LLM 合并）
 - **睡眠清理**：每天凌晨 4 点自动聚类合并（≥ 0.70 阈值）
 - 详见 [docs/memory-graph.md](docs/memory-graph.md)、[docs/memory-debug-panel.md](docs/memory-debug-panel.md)
@@ -199,7 +199,7 @@
 - 防御机制：撒娇式调侃、害羞转移话题、故意唱反调（都是可爱的，不是冷漠的）
 - 情绪响应：6 种场景（用户难过/生气/兴奋/焦虑/离开/表达好感）各有对应行为策略
 - 关系动态：从 new_acquaintance → familiar → close → very_close 渐进解锁
-- 兴趣爱好：从 self_memories 动态生成（LLM 提取 + embedding 去重），YAML interests 作为降级方案
+- 兴趣爱好：从 memories 表 self_* 类型动态生成（LLM 提取 + embedding 去重），YAML interests 作为降级方案
 
 ### 4. 语晴的心情系统
 
@@ -266,9 +266,9 @@
 语晴不只是被动收集碎片化的自我记忆，还能将它们合成为连贯的自我叙事：
 
 **自我叙事合成**
-- 将零散 self_memories + YAML 性格 traits 综合为 3-5 句第一人称叙事
+- 将零散 self_* 记忆 + YAML 性格 traits 综合为 3-5 句第一人称叙事
 - LLM prompt 包含性格维度数值，确保叙事风格一致（warmth 0.45 不会写出热情奔放的风格）
-- 缓存到 app_settings，self_memories 变化 ≥ 5 条时重新生成
+- 缓存到 app_settings，self_* 记忆数量变化 ≥ 5 条时重新生成
 - 注入 system prompt「你发现自己的一些事」区块
 
 **设计原则**：YAML 静态骨架（不可变）+ 自我叙事（动态补充）共存，不冲突。
@@ -426,8 +426,7 @@ yuqing/
 |----|------|
 | `conversations` | 对话列表 |
 | `messages` | 消息记录（含情绪标注） |
-| `memories` | 长期记忆（7种类型 + 情绪metadata + 衰减/巩固标记） |
-| `self_memories` | 语晴的自我记忆（4 种类型 + embedding 去重 + 合并） |
+| `memories` | 长期记忆（用户 7 种类型 + 自我 4 种类型，统一存储，情绪 metadata + 衰减/巩固标记） |
 | `emotion_snapshots` | 用户情绪快照 |
 | `yuqing_mood_log` | 语晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |

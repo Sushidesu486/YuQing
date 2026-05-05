@@ -61,8 +61,8 @@
 - [x] 无 API key 时全部功能静默跳过
 
 ### 自我认知系统（SelfCognitionEngine）
-- [x] 自我叙事合成：LLM 将零散 self_memories + YAML 性格 traits 合成为连贯的第一人称叙事
-- [x] 触发条件：self_memories 数量变化 ≥ 5 条时重新生成（最低 8 条才生成）
+- [x] 自我叙事合成：LLM 将零散 self_* 记忆 + YAML 性格 traits 合成为连贯的第一人称叙事
+- [x] 触发条件：self_* 记忆数量变化 ≥ 5 条时重新生成（最低 8 条才生成）
 - [x] 缓存机制：叙事存入 app_settings KV（self_narrative + self_narrative_mem_count）
 - [x] 一致性保障：LLM prompt 包含 YAML traits 数值，确保叙事风格与核心性格一致
 - [x] 不冲突设计：YAML 静态骨架（不可变）+ 自我叙事（动态补充）共存
@@ -137,6 +137,8 @@
 - [x] `cognitive.py`：返场检测查询缺少 `conversation_id` 过滤
 - [x] `memories`：`extract_and_store_memories`、`consolidate_memories` INSERT 缺少 `source_conversation_id`
 - [x] mem0 移除：去掉 mem0 + ChromaDB，统一为 MySQL + 本地 BGE 语义搜索（消除 ID 脱节，激活传播恢复正常）
+- [x] self_memories 合并：去掉 self_memories 表，统一存入 memories 表（memory_type='self_*'），消除 ~150 行重复逻辑
+- [x] 召回算法修复：激活传播加载 2 跳邻居（原 1 跳导致多轮迭代空转）；搜索批量 encode + embedding 缓存复用
 - [x] 前端 SSE：chunk 边界分割导致 done 事件 JSON 解析失败（行缓冲修复）
 - [x] 前端 fallback handler：双重展开导致 cleaned 内容被 fullContent 覆盖
 - [x] 信息检索 hash 去重：Python `hash()` 跨进程不稳定导致重启后重复检索，改用 `hashlib.md5`
@@ -158,7 +160,7 @@
 
 | 问题 | 状态 | 说明 |
 |------|------|------|
-| **碎片化** | ✅ 已解决 | SelfCognitionEngine 将零散 self_memories 合成为连贯的自我叙事 |
+| **碎片化** | ✅ 已解决 | SelfCognitionEngine 将零散 self_* 记忆合成为连贯的自我叙事 |
 | **注入薄弱** | ✅ 已改善 | 新增"你发现自己的一些事"和"最近了解的事"两个注入区块 |
 | **无关系认知** | 待实现 | 对"我和这个人的关系"缺乏积累（L2 Relationship Awareness） |
 | **无变化感知** | 待实现 | 兴趣/观点演变追踪（L3 Self-Evolution） |
@@ -244,13 +246,13 @@ MEMORY_LINK_SEMANTIC_THRESHOLD: float = 0.4
 
 ### 3.5 语晴自我认知深化（SelfCognitionEngine）
 
-当前 self_memories 只是碎片化条目收集，已实现 L1 自我叙事合成。
+当前 self_* 记忆只是碎片化条目收集（统一存储在 memories 表），已实现 L1 自我叙事合成。
 
 **三层架构**：
 
 ```
 L1 自我叙事（Self-Narrative）✅ 已完成
-  └─ self_memories 数量变化 ≥ 5 条时，LLM 综合为连贯叙事
+  └─ self_* 记忆数量变化 ≥ 5 条时，LLM 综合为连贯叙事
   └─ 缓存到 app_settings KV，注入 prompt「你发现自己的一些事」
 
 L2 关系认知（Relationship Awareness）待实现
@@ -261,7 +263,7 @@ L2 关系认知（Relationship Awareness）待实现
   - [ ] 存储方案：复用 app_settings KV 或 conversations 表扩展字段
 
 L3 自我变化追踪（Self-Evolution）待实现
-  └─ 检测 self_memories 中的矛盾/演变信号
+  └─ 检测 self_* 记忆中的矛盾/演变信号
   └─ 复用错误记忆纠正机制
   - [ ] 新增 memory_type=self_evolution 记录变化事件
   - [ ] 变化事件触发自我叙事重新生成
@@ -321,8 +323,7 @@ L3 自我变化追踪（Self-Evolution）待实现
 ```
 conversations ──┬── 1:N ── messages
                 ├── 1:N ── emotion_snapshots
-                ├── 1:N ── memories (source_conversation)
-                ├── 1:N ── self_memories (source_conversation)
+                ├── 1:N ── memories (source_conversation, 含 user + self 两种 memory_type)
                 ├── 1:N ── proactive_messages
                 └── 1:N ── yuqing_mood_log
 messages ──────── 1:N ── memories (source_message)

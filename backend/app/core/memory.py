@@ -165,16 +165,14 @@ _BEHAVIOR_RULE_PATTERNS = [
 # ── Embedding model singleton ──
 
 _embedding_model = None
-_self_mem_embedding_cache: dict[str, list] = {}  # {content: embedding_vector}
-_self_mem_cache_valid = False
 
-_user_mem_embedding_cache: dict[str, dict] = {}   # {id: {"emb": vector, "content": str}}
-_user_mem_cache_valid = False
+_mem_embedding_cache: dict[str, dict] = {}   # {id: {"emb": vector, "content": str}}
+_mem_cache_valid = False
 
 
-def _invalidate_user_mem_cache():
-    global _user_mem_cache_valid
-    _user_mem_cache_valid = False
+def _invalidate_mem_cache():
+    global _mem_cache_valid
+    _mem_cache_valid = False
 
 
 def _get_embedding_model():
@@ -197,9 +195,6 @@ def _cosine_similarity(a: list, b: list) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _invalidate_self_mem_cache():
-    global _self_mem_cache_valid
-    _self_mem_cache_valid = False
 
 
 
@@ -224,9 +219,9 @@ def _time_ago(dt: datetime) -> str:
         return f"{int(days / 365)}年前"
 
 
-async def _load_user_mem_cache():
+async def _load_mem_cache():
     """Load all valid user memories' embeddings into cache."""
-    global _user_mem_cache_valid, _user_mem_embedding_cache
+    global _mem_cache_valid, _mem_embedding_cache
     try:
         model = _get_embedding_model()
     except Exception:
@@ -238,15 +233,15 @@ async def _load_user_mem_cache():
                 "SELECT id, content FROM memories WHERE is_invalid = 0 AND is_consolidated = 0"
             )
             rows = await cur.fetchall()
-    _user_mem_embedding_cache.clear()
+    _mem_embedding_cache.clear()
     for r in rows:
-        if r["content"] not in _user_mem_embedding_cache:
-            _user_mem_embedding_cache[r["id"]] = {
+        if r["content"] not in _mem_embedding_cache:
+            _mem_embedding_cache[r["id"]] = {
                 "emb": model.encode(r["content"]).tolist(),
                 "content": r["content"],
             }
-    _user_mem_cache_valid = True
-    logger.info(f"User memory dedup cache loaded: {len(_user_mem_embedding_cache)} entries")
+    _mem_cache_valid = True
+    logger.info(f"Memory embedding cache loaded: {len(_mem_embedding_cache)} entries")
 
 
 class MemoryManager:
@@ -294,6 +289,7 @@ class MemoryManager:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence "
                     "FROM memories WHERE importance >= 0.8 AND is_invalid = 0 "
+                    "AND (memory_type NOT LIKE 'self_%' OR memory_type IS NULL) "
                     "ORDER BY importance DESC LIMIT 10"
                 )
                 pinned_rows = await cur.fetchall()
@@ -518,11 +514,27 @@ class MemoryManager:
         # Exclude seed IDs from neighbors
         neighbor_ids = [nid for nid in hop1_ids if nid not in activation]
 
-        if not neighbor_ids:
+        # Also load 2-hop neighbors so multi-iteration spreading actually works
+        hop2_ids = []
+        if neighbor_ids:
+            hop1_ph = ",".join(["%s"] * len(neighbor_ids))
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f"SELECT DISTINCT "
+                        f"CASE WHEN source_id IN ({hop1_ph}) THEN target_id ELSE source_id END AS neighbor_id "
+                        f"FROM memory_links "
+                        f"WHERE source_id IN ({hop1_ph}) OR target_id IN ({hop1_ph})",
+                        tuple(neighbor_ids + neighbor_ids + neighbor_ids),
+                    )
+                    hop2_ids = [row[0] for row in await cur.fetchall()]
+            hop2_ids = [nid for nid in hop2_ids if nid not in activation]
+
+        if not neighbor_ids and not hop2_ids:
             return []
 
-        # Load all edges for subgraph (seed + hop1)
-        all_relevant = list(set(seed_ids + neighbor_ids))
+        # Load all edges for subgraph (seed + hop1 + hop2)
+        all_relevant = list(set(seed_ids + neighbor_ids + hop2_ids))
         relevant_ph = ",".join(["%s"] * len(all_relevant))
 
         # Load edges as adjacency: {node_id: [(neighbor_id, strength), ...]}
@@ -925,7 +937,7 @@ class MemoryManager:
                                     (merged_content, existing_id),
                                 )
                         # Update cache
-                        _invalidate_user_mem_cache()
+                        _invalidate_mem_cache()
                         stored.append({
                             "id": existing_id, "content": merged_content,
                             "category": memory_type, "memory_type": memory_type,
@@ -954,7 +966,7 @@ class MemoryManager:
             # Update dedup cache with new entry
             try:
                 model = _get_embedding_model()
-                _user_mem_embedding_cache[mem_id] = {
+                _mem_embedding_cache[mem_id] = {
                     "emb": model.encode(content).tolist(),
                     "content": content,
                 }
@@ -1044,129 +1056,73 @@ class MemoryManager:
                     corrected_count += 1
                 continue
 
-            # Try self_memories table
-            async with pool.acquire() as conn:
-                async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute(
-                        "SELECT id FROM self_memories WHERE id = %s AND is_invalid = 0",
-                        (memory_id,),
-                    )
-                    sm_row = await cur.fetchone()
-
-            if sm_row:
-                async with pool.acquire() as conn:
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE self_memories SET is_invalid = 1 WHERE id = %s",
-                            (memory_id,),
-                        )
-                        if corrected_content:
-                            new_sm_id = _generate_id()
-                            await cur.execute(
-                                "INSERT INTO self_memories (id, content, memory_type, "
-                                "importance, source_conversation_id) "
-                                "VALUES (%s, %s, %s, %s, %s)",
-                                (new_sm_id, corrected_content, "self_reflection", 0.6,
-                                 conversation_id),
-                            )
-                logger.info(f"Self-memory correction: [{memory_id}] marked invalid. Reason: {reason}")
-                corrected_count += 1
-            else:
-                logger.debug(f"Correction target [{memory_id}] not found in any table")
+            logger.debug(f"Correction target [{memory_id}] not found in memories table")
 
         if corrected_count:
             logger.info(f"Applied {corrected_count} memory correction(s) in conversation {conversation_id[:8]}")
-            _invalidate_user_mem_cache()
+            _invalidate_mem_cache()
 
     async def _store_self_memories(
         self,
         conversation_id: str,
         self_memories_raw: list,
     ):
-        """Store LLM-extracted self-memories with embedding-based dedup."""
-        global _self_mem_cache_valid
-
-        try:
-            model = _get_embedding_model()
-        except Exception as e:
-            logger.warning(f"Cannot load embedding model for self-memory dedup: {e}")
-            return
-
-        # Load existing self_memories for dedup comparison
+        """Store LLM-extracted self-memories into the unified memories table."""
         pool = await get_pool()
-        existing = []
-        async with pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
-                    "SELECT id, content, importance FROM self_memories "
-                    "WHERE is_consolidated = 0 ORDER BY created_at DESC"
-                )
-                existing = await cur.fetchall()
+        stored = []
 
-        # Build embedding cache for existing memories (rebuild if invalidated)
-        if not _self_mem_cache_valid or not _self_mem_embedding_cache:
-            _self_mem_embedding_cache.clear()
-            for mem in existing:
-                if mem["content"] not in _self_mem_embedding_cache:
-                    emb = model.encode(mem["content"])
-                    _self_mem_embedding_cache[mem["content"]] = emb.tolist()
-            _self_mem_cache_valid = True
-
-        # Encode new candidates
-        new_texts = [m.get("content", "").strip() for m in self_memories_raw]
-        new_texts = [t for t in new_texts if t and len(t) >= 4]
-        if not new_texts:
-            return
-
-        new_embeddings = model.encode(new_texts)
-
-        for i, content in enumerate(new_texts):
-            new_emb = new_embeddings[i].tolist()
-
-            # Check similarity against all existing self_memories
-            is_dup = False
-            best_sim = 0.0
-            best_id = None
-
-            for mem in existing:
-                existing_emb = _self_mem_embedding_cache.get(mem["content"])
-                if existing_emb is None:
-                    continue
-                sim = _cosine_similarity(new_emb, existing_emb)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_id = mem["id"]
-
-            if best_sim > 0.85:
-                # Duplicate — skip
-                logger.debug(f"Self-memory dedup (sim={best_sim:.2f}): {content[:40]}")
+        for mem in self_memories_raw:
+            content = mem.get("content", "").strip()
+            if not content or len(content) < 4:
                 continue
 
-            # Store new self-memory
-            mem_type = self_memories_raw[i].get("memory_type", "self_reflection")
-            importance = float(self_memories_raw[i].get("importance", 0.5))
+            mem_type = mem.get("memory_type", "self_interest")
+            importance = float(mem.get("importance", 0.5))
+
+            # Dedup check using unified cache
+            if settings.MEMORY_DEDUP_ENABLED:
+                dedup_result = await self._deduplicate_user_memory(content, mem_type)
+                if dedup_result:
+                    if dedup_result["action"] == "merge" and dedup_result.get("merged_content"):
+                        existing_id = dedup_result["id"]
+                        async with pool.acquire() as conn:
+                            async with conn.cursor() as cur:
+                                await cur.execute(
+                                    "UPDATE memories SET content = %s WHERE id = %s",
+                                    (dedup_result["merged_content"], existing_id),
+                                )
+                        _invalidate_mem_cache()
+                    continue  # both skip and merge skip new insertion
 
             mem_id = _generate_id()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        "INSERT INTO self_memories (id, content, memory_type, "
-                        "importance, source_conversation_id) "
-                        "VALUES (%s, %s, %s, %s, %s)",
-                        (mem_id, content, mem_type, importance, conversation_id),
+                        "INSERT INTO memories (id, content, category, importance, "
+                        "original_importance, source_conversation_id, "
+                        "memory_type, valence, arousal, emotion_label, confidence) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (mem_id, content, 'self', importance, importance,
+                         conversation_id, mem_type, 0.0, 0.0, "", 0.5),
                     )
+            stored.append({"id": mem_id, "content": content, "memory_type": mem_type})
 
-                    # If similar to existing (0.6-0.85), boost existing memory's importance
-                    if best_sim > 0.6 and best_id:
-                        await cur.execute(
-                            "UPDATE self_memories SET importance = LEAST(importance + 0.05, 1.0) "
-                            "WHERE id = %s",
-                            (best_id,),
-                        )
+            # Update embedding cache
+            try:
+                model = _get_embedding_model()
+                _mem_embedding_cache[mem_id] = {
+                    "emb": model.encode(content).tolist(),
+                    "content": content,
+                }
+            except Exception:
+                pass
 
-            # Update cache
-            _self_mem_embedding_cache[content] = new_emb
-            logger.debug(f"Stored self-memory: {content[:50]}")
+        # Create co-occurrence links
+        if settings.MEMORY_LINK_ENABLED and len(stored) >= 2:
+            await self._create_co_occurrence_links(stored)
+
+        if stored:
+            logger.info(f"Stored {len(stored)} self-memories in conversation {conversation_id[:8]}")
 
     # ── Memory search ──
 
@@ -1213,19 +1169,38 @@ class MemoryManager:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence, access_count "
                     "FROM memories WHERE is_invalid = 0 AND importance > 0.1 "
+                    "AND memory_type NOT LIKE 'self_%' "
                     "ORDER BY last_accessed DESC LIMIT 200"
                 )
                 candidates = await cur.fetchall()
 
-        # Compute cosine similarity for each candidate
+        # Batch compute cosine similarity using cache + batch encode
         scored = []
-        for r in candidates:
+        cache = await self._get_mem_cache()
+        texts_to_encode = []
+        text_indices = []
+
+        for i, r in enumerate(candidates):
+            cached = cache.get(r["id"])
+            if cached and cached["content"] == r["content"]:
+                sim = _cosine_similarity(query_emb, cached["emb"])
+                scored.append((sim, r))
+            else:
+                texts_to_encode.append(r["content"])
+                text_indices.append(i)
+
+        # Batch encode uncached candidates
+        if texts_to_encode:
             try:
-                cand_emb = model.encode(r["content"]).tolist()
-                sim = _cosine_similarity(query_emb, cand_emb)
+                embeddings = model.encode(texts_to_encode)
+                for j, idx in enumerate(text_indices):
+                    cand_emb = embeddings[j].tolist()
+                    sim = _cosine_similarity(query_emb, cand_emb)
+                    scored.append((sim, candidates[idx]))
+                    cache[candidates[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
             except Exception:
-                sim = 0.0
-            scored.append((sim, r))
+                for idx in text_indices:
+                    scored.append((0.0, candidates[idx]))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [
@@ -1243,143 +1218,18 @@ class MemoryManager:
     # ── Self-memories ──
 
     async def get_self_memories(self, limit: int = 10) -> list:
-        """Retrieve self-memories (语晴's own reflections/preferences)."""
+        """Retrieve self-memories from the unified memories table."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, access_count "
-                    "FROM self_memories WHERE is_consolidated = 0 AND is_invalid = 0 "
+                    "FROM memories WHERE memory_type LIKE 'self_%' "
+                    "AND is_invalid = 0 AND is_consolidated = 0 "
                     "ORDER BY importance DESC LIMIT %s",
                     (limit,),
                 )
                 return await cur.fetchall()
-
-    async def consolidate_self_memories(self) -> int:
-        """Find clusters of similar self-memories and merge them using embedding + LLM."""
-        global _self_mem_cache_valid
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
-                    "SELECT COUNT(*) as cnt FROM self_memories WHERE is_consolidated = 0 AND is_invalid = 0"
-                )
-                row = await cur.fetchone()
-                total = row[0] if row else 0
-
-        if total < 10:
-            return 0
-
-        try:
-            model = _get_embedding_model()
-        except Exception as e:
-            logger.warning(f"Cannot load embedding model for self-memory consolidation: {e}")
-            return 0
-
-        # Load all unconsolidated self-memories
-        async with pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
-                    "SELECT id, content, memory_type, importance FROM self_memories "
-                    "WHERE is_consolidated = 0 AND is_invalid = 0 ORDER BY importance DESC"
-                )
-                rows = await cur.fetchall()
-
-        if len(rows) < 10:
-            return 0
-
-        # Compute embeddings and cluster by similarity
-        texts = [r["content"] for r in rows]
-        embeddings = model.encode(texts)
-
-        # Build clusters: group memories with cosine similarity > 0.75
-        visited = set()
-        clusters = []
-        for i in range(len(rows)):
-            if i in visited:
-                continue
-            cluster = [i]
-            visited.add(i)
-            for j in range(i + 1, len(rows)):
-                if j in visited:
-                    continue
-                sim = _cosine_similarity(embeddings[i].tolist(), embeddings[j].tolist())
-                if sim > 0.75:
-                    cluster.append(j)
-                    visited.add(j)
-            clusters.append(cluster)
-
-        # Merge clusters with 3+ members using LLM
-        from app.core.llm import generate_completion
-
-        consolidated_count = 0
-        for cluster in clusters:
-            if len(cluster) < 3:
-                continue
-
-            cluster_mems = [rows[idx] for idx in cluster]
-            memories_text = "\n".join(
-                f"[{m['id']}] {m['content']} (类型: {m['memory_type']}, 重要性: {m['importance']})"
-                for m in cluster_mems
-            )
-
-            prompt = SELF_CONSOLIDATE_PROMPT_ZH.replace("{memories}", memories_text)
-
-            try:
-                result = await generate_completion(
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                )
-            except Exception as e:
-                logger.warning(f"Self-memory consolidation LLM call failed: {e}")
-                continue
-
-            try:
-                text = result.strip()
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-                    text = text.rsplit("```", 1)[0] if "```" in text else text
-                merged = json.loads(text)
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse self-memory consolidation result")
-                continue
-
-            if not isinstance(merged, list) or not merged:
-                continue
-
-            for new_mem in merged:
-                source_ids = new_mem.get("source_ids", [])
-                content = new_mem.get("content", "").strip()
-                if not content or len(source_ids) < 2:
-                    continue
-
-                new_id = _generate_id()
-                mem_type = new_mem.get("memory_type", "self_reflection")
-                importance = float(new_mem.get("importance", 0.5))
-
-                async with pool.acquire() as conn:
-                    async with conn.cursor() as cur:
-                        placeholders = ",".join(["%s"] * len(source_ids))
-                        await cur.execute(
-                            f"UPDATE self_memories SET is_consolidated = 1 WHERE id IN ({placeholders})",
-                            tuple(source_ids),
-                        )
-                        await cur.execute(
-                            "INSERT INTO self_memories (id, content, memory_type, "
-                            "importance, source_conversation_id, is_consolidated) "
-                            "VALUES (%s, %s, %s, %s, %s, 0)",
-                            (new_id, content, mem_type, importance,
-                             source_ids[0] if source_ids else None),
-                        )
-
-                consolidated_count += 1
-
-        if consolidated_count:
-            _invalidate_self_mem_cache()
-            logger.info(f"Self-memory consolidation: merged {consolidated_count} clusters")
-
-        return consolidated_count
 
     # ── Memory decay ──
 
@@ -1460,12 +1310,30 @@ class MemoryManager:
         try:
             model = _get_embedding_model()
             query_emb = model.encode(query).tolist()
+            cache = await self._get_mem_cache()
             scored = []
-            for r in dormant_rows:
-                cand_emb = model.encode(r["content"]).tolist()
-                sim = _cosine_similarity(query_emb, cand_emb)
-                days_dormant = (datetime.utcnow() - (r["last_accessed"] or r["created_at"])).days
-                scored.append((sim, days_dormant, r))
+            texts_to_encode = []
+            text_indices = []
+
+            for i, r in enumerate(dormant_rows):
+                cached = cache.get(r["id"])
+                if cached and cached["content"] == r["content"]:
+                    sim = _cosine_similarity(query_emb, cached["emb"])
+                    days_dormant = (datetime.utcnow() - (r["last_accessed"] or r["created_at"])).days
+                    scored.append((sim, days_dormant, r))
+                else:
+                    texts_to_encode.append(r["content"])
+                    text_indices.append(i)
+
+            if texts_to_encode:
+                embeddings = model.encode(texts_to_encode)
+                for j, idx in enumerate(text_indices):
+                    cand_emb = embeddings[j].tolist()
+                    sim = _cosine_similarity(query_emb, cand_emb)
+                    days_dormant = (datetime.utcnow() - (dormant_rows[idx]["last_accessed"] or dormant_rows[idx]["created_at"])).days
+                    scored.append((sim, days_dormant, dormant_rows[idx]))
+                    cache[dormant_rows[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
+
             scored.sort(key=lambda x: x[0], reverse=True)
             results = []
             for sim, days_dormant, r in scored[:top_k]:
@@ -1580,12 +1448,12 @@ class MemoryManager:
 
     # ── Memory dedup (pre-insert) ──
 
-    async def _get_user_mem_cache(self) -> dict:
+    async def _get_mem_cache(self) -> dict:
         """Return the user memory embedding cache, loading if needed."""
-        global _user_mem_cache_valid
-        if not _user_mem_cache_valid or not _user_mem_embedding_cache:
-            await _load_user_mem_cache()
-        return _user_mem_embedding_cache
+        global _mem_cache_valid
+        if not _mem_cache_valid or not _mem_embedding_cache:
+            await _load_mem_cache()
+        return _mem_embedding_cache
 
     async def _deduplicate_user_memory(self, content: str, memory_type: str) -> dict:
         """Check if a new memory duplicates an existing one.
@@ -1595,7 +1463,7 @@ class MemoryManager:
             {"action": "merge", "id": ..., "merged_content": ...}  — 0.75-0.90, merge
             {}                                                      — not duplicate, proceed
         """
-        cache = await self._get_user_mem_cache()
+        cache = await self._get_mem_cache()
         if not cache:
             return {}
 
@@ -1686,7 +1554,10 @@ class MemoryManager:
         from app.core.llm import generate_completion
 
         consolidated_count = 0
-        memory_types = ["fact", "preference", "event", "episodic", "emotion", "procedural"]
+        memory_types = [
+            "fact", "preference", "event", "episodic", "emotion", "procedural",
+            "self_interest", "self_experience", "self_opinion", "self_habit",
+        ]
 
         for memory_type in memory_types:
             async with pool.acquire() as conn:
@@ -1706,8 +1577,9 @@ class MemoryManager:
                 f"[{r['id']}] {r['content']} (重要性: {r['importance']})" for r in rows
             )
 
-            # Safe substitution
-            prompt = CONSOLIDATE_PROMPT_ZH.replace("{memories}", memories_text)
+            # Safe substitution — self types use self-specific prompt
+            prompt_template = SELF_CONSOLIDATE_PROMPT_ZH if memory_type.startswith("self_") else CONSOLIDATE_PROMPT_ZH
+            prompt = prompt_template.replace("{memories}", memories_text)
 
             try:
                 result = await generate_completion(
@@ -1752,7 +1624,8 @@ class MemoryManager:
                             "original_importance, is_consolidated, consolidated_from, "
                             "source_conversation_id, memory_type) "
                             "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s)",
-                            (new_id, content, memory_type, importance, importance,
+                            (new_id, content, 'self' if memory_type.startswith('self_') else memory_type,
+                             importance, importance,
                              json.dumps(source_ids, ensure_ascii=False),
                              source_ids[0] if source_ids else None,
                              memory_type),
@@ -1767,7 +1640,7 @@ class MemoryManager:
 
         if consolidated_count:
             logger.info(f"Memory consolidation: created {consolidated_count} consolidated memories")
-            _invalidate_user_mem_cache()
+            _invalidate_mem_cache()
 
         return consolidated_count
 
@@ -1822,7 +1695,7 @@ class MemoryManager:
             result["clusters_merged"] = await self._cluster_merge_memories()
 
         # Refresh cache
-        _invalidate_user_mem_cache()
+        _invalidate_mem_cache()
 
         # Record last cleanup time
         async with pool.acquire() as conn:
@@ -1845,7 +1718,10 @@ class MemoryManager:
         model = _get_embedding_model()
         threshold = settings.MEMORY_SLEEP_CLEANUP_CLUSTER_THRESHOLD
 
-        for memory_type in ["fact", "preference", "event", "episodic", "emotion", "procedural"]:
+        for memory_type in [
+            "fact", "preference", "event", "episodic", "emotion", "procedural",
+            "self_interest", "self_experience", "self_opinion", "self_habit",
+        ]:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
                     await cur.execute(
@@ -1940,8 +1816,9 @@ class MemoryManager:
                             "original_importance, is_consolidated, consolidated_from, "
                             "source_conversation_id, memory_type) "
                             "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s)",
-                            (new_id, merged_content, memory_type, max_importance,
-                             max_importance,
+                            (new_id, merged_content,
+                             'self' if memory_type.startswith('self_') else memory_type,
+                             max_importance, max_importance,
                              json.dumps(source_ids, ensure_ascii=False),
                              src_conv_id, memory_type),
                         )
@@ -1968,7 +1845,7 @@ class MemoryManager:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
 
-        _invalidate_user_mem_cache()
+        _invalidate_mem_cache()
 
 
 memory_manager = MemoryManager()

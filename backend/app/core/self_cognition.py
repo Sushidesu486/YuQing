@@ -98,8 +98,8 @@ class SelfCognitionEngine:
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT COUNT(*) FROM self_memories "
-                    "WHERE is_invalid = 0 AND is_consolidated = 0"
+                    "SELECT COUNT(*) FROM memories "
+                    "WHERE memory_type LIKE 'self_%' AND is_invalid = 0 AND is_consolidated = 0"
                 )
                 row = await cur.fetchone()
                 return row[0] if row else 0
@@ -113,8 +113,8 @@ class SelfCognitionEngine:
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT content, memory_type, importance FROM self_memories "
-                    "WHERE is_invalid = 0 AND is_consolidated = 0 "
+                    "SELECT content, memory_type, importance FROM memories "
+                    "WHERE memory_type LIKE 'self_%' AND is_invalid = 0 AND is_consolidated = 0 "
                     "ORDER BY importance DESC"
                 )
                 memories = await cur.fetchall()
