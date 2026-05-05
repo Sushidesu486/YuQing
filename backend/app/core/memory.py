@@ -774,7 +774,10 @@ class MemoryManager:
             """Bonus for memories whose valence matches current mood warmth."""
             if current_mood_warmth == 0.0:
                 return 0.0
-            valence = float(mem.get("metadata", {}).get("valence", 0))
+            valence = mem.get("metadata", {}).get("valence")
+            if valence is None:
+                return 0.0
+            valence = float(valence)
             if valence == 0:
                 return 0.0
             return current_mood_warmth * valence * settings.MOOD_CONGRUENT_RECALL_WEIGHT
