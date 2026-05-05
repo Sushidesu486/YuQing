@@ -24,6 +24,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting YuQing...")
     await init_db()
     _get_embedding_model()  # Pre-load embedding model
+
+    # Compute identity hash baseline on first startup (async, non-blocking)
+    asyncio.create_task(_init_identity_baseline())
+
     logger.info("Database and embedding model ready")
 
     # Start proactive background task
@@ -71,3 +75,12 @@ app.include_router(proactive.router)
 @app.get("/")
 async def root():
     return {"name": "YuQing", "version": "0.1.0"}
+
+
+async def _init_identity_baseline():
+    """Compute and store identity hash baseline on first startup."""
+    try:
+        from app.core.self_cognition import self_cognition_engine
+        await self_cognition_engine.check_identity_baseline()
+    except Exception as e:
+        logger.warning(f"Identity baseline init skipped: {e}")

@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     YUQING_MOOD_BASELINE_OPENNESS: float = 0.45
     YUQING_MOOD_BASELINE_ENERGY: float = 0.45
 
+    # Reflect-Evolve (personality evolution)
+    EVOLVE_ENABLED: bool = True
+    EVOLVE_REFLECT_INTERVAL: int = 40           # trigger Reflect every N messages
+    EVOLVE_MAX_DELTA: float = 0.05              # max single trait change per evolve
+    EVOLVE_MAX_DRIFT: float = 0.15              # max cumulative drift from YAML baseline
+
     # Embedding model (local BGE for semantic search)
     EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
 

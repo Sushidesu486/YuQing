@@ -225,6 +225,15 @@ class CognitiveProcessor:
         except Exception as e:
             logger.debug(f"Self-narrative update skipped: {e}")
 
+        # Reflect-Evolve (personality evolution, every 40 messages)
+        try:
+            from app.config import settings as cfg
+            if msg_count % cfg.EVOLVE_REFLECT_INTERVAL == 0:
+                from app.core.self_cognition import self_cognition_engine
+                await self_cognition_engine.reflect_and_evolve(msg_count)
+        except Exception as e:
+            logger.debug(f"Reflect-Evolve skipped: {e}")
+
         # Save emotion snapshot
         if user_emotion:
             try:

@@ -123,6 +123,20 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     INDEX idx_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS personality_evolution (
+    id CHAR(32) PRIMARY KEY,
+    triggered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    trigger_type ENUM('reflect', 'drift_correction') DEFAULT 'reflect',
+    reflection_text TEXT,
+    evolve_json JSON,
+    reasoning TEXT,
+    applied TINYINT NOT NULL DEFAULT 1,
+    snapshot_before JSON,
+    snapshot_after JSON,
+    identity_hash_before VARCHAR(64),
+    identity_hash_after VARCHAR(64)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS memory_links (
     id CHAR(32) PRIMARY KEY,
     source_id CHAR(32) NOT NULL,
