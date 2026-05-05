@@ -72,8 +72,8 @@
 |------|------|------|
 | Web 框架 | **FastAPI** (Python, async) | 异步，高性能 |
 | 数据库 | **MySQL 9** | 结构化数据持久化 |
-| 记忆引擎 | **MySQL** + BGE-small-zh-v1.5 | 语义检索 + 分层注入 + 激活传播 |
-| 嵌入模型 | **BAAI/bge-small-zh-v1.5** | 本地中文向量嵌入（512维，无需额外 API） |
+| 记忆引擎 | **MySQL** + BGE-base-zh-v1.5 | 语义检索 + 分层注入 + 激活传播 |
+| 嵌入模型 | **BAAI/bge-base-zh-v1.5** | 本地中文向量嵌入（768维，无需额外 API） |
 | LLM 接口 | **litellm** | 一套代码切换多家 API |
 | 模板引擎 | **Jinja2** | 动态生成 system prompt |
 
@@ -88,7 +88,7 @@
 
 ---
 
-## 七大核心能力
+## 九大核心能力
 
 ### 1. 记忆系统
 
@@ -131,7 +131,7 @@
 行为层 → "你自然形成的态度"        ← preference/procedural 转化为行为指令
 ```
 
-- 高重要性事实（importance >= 0.8）强制置顶，不参与排序竞争
+- 高重要性事实（importance >= 0.7）强制置顶，最多 4 条，不参与排序竞争
 - preference/procedural 通过正则模板转化为行为规则（无额外 LLM 调用）
 - 末尾强制约束："不确定就说不知道，绝对不要编造用户信息"
 
@@ -149,16 +149,16 @@
 ```
 
 **记忆召回**
-- 每次收到新消息，BGE embedding 语义检索（cosine similarity）召回最相关的记忆
+- 每次收到新消息，用最近 4 条消息拼接作为 query，BGE embedding 语义检索（cosine similarity）召回最相关的记忆
 - **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），加载 2 跳邻居实现真正的多轮扩散
-- **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2，替代纯语义排序
+- **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2 + recency bonus + mood congruence
 - 按类型分流到三个注入层
 - 休眠记忆（30天未访问）补充召回
 
 **记忆关联网络（Memory Graph）**
 - 同轮提取的记忆自动建链（co-occurrence，strength=0.7）
 - 记忆合并/纠正时继承链接（strength × 0.8 衰减）
-- BGE-small-zh-v1.5 本地语义搜索（cosine similarity，200 候选 → 批量 encode → 排序）
+- BGE-base-zh-v1.5 本地语义搜索（cosine similarity，200 候选 → 批量 encode → 排序）
 - 详见 [docs/memory-graph.md](docs/memory-graph.md)
 
 **记忆生命周期**
@@ -223,9 +223,14 @@
 
 **心情更新机制**：
 - **对话驱动**：每轮对话根据用户情绪 + 关键词信号更新（EMA 指数移动平均，alpha=0.15）
+- **非对称情绪传染**：warmth 慢跟随（α=0.10），energy 快响应（α=0.20）
+- **负面状态持久化**：warmth < 0.25 时衰减速率减半（人类负面偏见）
+- **跨会话保留**：session peak×0.4 + end×0.4 + baseline×0.2，48h 残留衰减
 - **缺席衰减**：用户消失时温暖/敞开/能量逐小时衰减
 - **返场 bump**：用户回来时温暖+0.10（如释重负）但敞开-0.05（防御性掩饰）
 - **基线引力**：每次更新后温和拉回基线值，防止永久漂移
+- **自适应引力**：value > 0.85 或 < 0.15 时额外 pull（防止极端值）
+- **天花板/地板**：接近 0/1 极值时边际递减
 
 ### 5. 主动消息系统
 
@@ -245,7 +250,26 @@
 
 **前端集成**：SSE 长连接 + EventSource 自动重连 + 离线消息兜底（`/proactive/recent`）。
 
-### 6. 用户偏好学习
+### 6. 时间感知系统
+
+语晴对时间有细腻的感知，不是"失忆重启"：
+
+**五个时间维度**：
+| 维度 | 说明 | 示例 |
+|------|------|------|
+| 会话间隔 | 6 档分级（刚走开 → 好久不见） | "才5分钟"、"好几天没来了" |
+| 时段感知 | 6 个时段 + 深夜判定 | "下午三点"、"凌晨两点半" |
+| 关系任期 | 认识天数 → 自然描述 | "认识快一个月了" |
+| 对话时长 | 当前会话时长 + 消息数 | "已经聊了一个多小时了" |
+| 今日统计 | 今日消息数 + 是否首条 | "今天第一次找你" |
+
+**时间维度联动**：
+- **记忆时间锚定**：所有记忆类型标注相对时间（"3天前了解到"、"上周"），episodic 补上时间上下文
+- **召回评分**：近 7 天记忆 +0.05 recency bonus，近 30 天 +0.02
+- **昼夜节律**：深夜（0-5 点）语晴能量自动降低，回复更简短安静
+- **主动消息**：不同时段风格不同（深夜温柔、白天随意）
+
+### 7. 用户偏好学习
 
 从对话中自动学习用户的 5 个沟通偏好维度：
 
@@ -261,7 +285,7 @@
 - 置信度采用加权移动平均递增
 - 置信度 >= 0.5 的偏好注入 system prompt
 
-### 6. 自我认知系统（SelfCognitionEngine）
+### 8. 自我认知系统（SelfCognitionEngine）
 
 语晴不只是被动收集碎片化的自我记忆，还能从中发现自己的变化，并逐步演化人格。
 
@@ -277,7 +301,7 @@
 - **Identity Hash**：首次启动用 5 个身份探针问题计算基线 SHA256，定期对比检测漂移
 - **设计原则**：YAML 静态骨架提供稳定性，Evolve 提供适应性增长，审计日志保证可追溯
 
-### 7. 信息检索系统（InfoRetrievalEngine）
+### 9. 信息检索系统（InfoRetrievalEngine）
 
 语晴能主动了解外部世界，不只是依赖对话学习：
 
@@ -379,6 +403,7 @@ yuqing/
 │       ├── core/
 │       │   ├── cognitive.py          # CognitiveProcessor — 认知处理器（总编排）
 │       │   ├── memory.py             # MemoryManager — 分层记忆系统（BGE+MySQL）
+│       │   ├── temporal.py           # TemporalContext — 时间感知（会话间隔/时段/任期）
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
@@ -454,10 +479,14 @@ yuqing/
 | `MEMORY_DECAY_HALF_LIFE_DAYS` | 90 | 记忆重要性减半天数 |
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
-| `EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 中文嵌入模型（本地，512维） |
-| `MEMORY_FACT_TOP_K` | 6 | 显式注入的事实/事件条数上限 |
+| `EMBEDDING_MODEL` | BAAI/bge-base-zh-v1.5 | 中文嵌入模型（本地，768维） |
+| `MEMORY_FACT_TOP_K` | 8 | 显式注入的事实/事件条数上限 |
 | `MEMORY_BEHAVIOR_RULES_MAX` | 8 | 行为规则最大条数 |
-| `MEMORY_EPISODIC_MAX` | 3 | 情景记忆最大条数 |
+| `MEMORY_EPISODIC_MAX` | 5 | 情景记忆最大条数 |
+| `MEMORY_PINNED_FACTS_THRESHOLD` | 0.7 | Pinned facts 重要性阈值 |
+| `MEMORY_PINNED_FACTS_MAX` | 4 | Pinned facts 最大条数 |
+| `MEMORY_EXTRACT_USER_LIMIT` | 8 | 每轮用户记忆提取上限 |
+| `MEMORY_EXTRACT_SELF_LIMIT` | 5 | 每轮自我记忆提取上限 |
 | `SELF_MEMORY_ENABLED` | true | 是否启用自我记忆 |
 
 ### 记忆关联网络参数（.env）
@@ -501,6 +530,21 @@ yuqing/
 | `YUQING_MOOD_BASELINE_WARMTH` | 0.40 | 温暖度基线 |
 | `YUQING_MOOD_BASELINE_OPENNESS` | 0.45 | 敞开度基线 |
 | `YUQING_MOOD_BASELINE_ENERGY` | 0.45 | 能量基线 |
+| `MOOD_WARMTH_ALPHA` | 0.10 | 温暖度跟随用户速度（慢） |
+| `MOOD_ENERGY_ALPHA` | 0.20 | 能量跟随用户速度（快） |
+| `MOOD_NEGATIVE_DECAY_FACTOR` | 0.5 | 负面状态衰减减缓因子 |
+| `MOOD_CEILING_FLOOR_RESISTANCE` | 0.03 | 极值阻尼系数 |
+
+### 时间感知参数（.env）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `TEMPORAL_ENABLED` | true | 是否启用时间感知 |
+| `TEMPORAL_CONTINUATION_MINUTES` | 10 | "刚走开"判定阈值 |
+| `TEMPORAL_SHORT_BREAK_MINUTES` | 120 | "短暂离开"判定阈值 |
+| `TEMPORAL_LATE_NIGHT_START` | 0 | 深夜时段开始 |
+| `TEMPORAL_LATE_NIGHT_END` | 5 | 深夜时段结束 |
+| `TEMPORAL_ENERGY_NIGHT_PENALTY` | 0.05 | 深夜能量衰减 |
 
 ### 信息检索参数（.env）
 
@@ -583,7 +627,7 @@ yuqing/
 | **定位** | 研究/教育平台完整认知架构 | 个人情感 AI 伙伴 |
 | **LLM** | 仅 OpenAI GPT-4 | 多模型支持（litellm） |
 | **数据库** | SQLite | MySQL 9（生产级） |
-| **向量检索** | 未内置 | MySQL + BGE-small-zh-v1.5 本地语义搜索 || **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
+| **向量检索** | 未内置 | MySQL + BGE-base-zh-v1.5 本地语义搜索 || **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
 | **用户系统** | 多用户注册 | 单用户，无认证 |
 | **情绪系统** | 12 类关键词检测 + 心理健康追踪 | V-A 模型 + LLM 分析 + 语晴自身心情 |
 | **主动行为** | 无 | 4 种触发器 + 后台任务 + SSE 推送 |

@@ -19,10 +19,11 @@
 - [x] 消息打包 UX 优化：打包发送后才显示输入指示器，避免误触
 
 ### 认知处理器（CognitiveProcessor）
-- [x] 10 阶段流水线：情绪分析 → 心情更新 → 记忆召回 → 被动信息检索 → 人格 prompt → 消息存储 → 上下文加载 → LLM 流式生成 → 消息存储 → 后台任务
+- [x] 10 阶段流水线：情绪分析 → 心情更新 → 时间感知 → 记忆召回 → 被动信息检索 → 人格 prompt → 消息存储 → 上下文加载 → LLM 流式生成 → 消息存储 → 后台任务
 - [x] SSE 事件类型：emotion / mood / token / memory_extracted / knowledge / proactive / done / error
 - [x] 用户消息按行拆分存储，合并文本用于记忆提取
 - [x] 硬格式约束禁止 "..." 输出 + 前端三层清理（prompt 约束 / EMPTY_RESPONSES 过滤 / done 事件段落清洗）
+- [x] SSE done 事件提前：done yield 移到 Phase 8 之后、Phase 9 之前（记忆提取 LLM 不再阻塞前端）
 
 ### 记忆系统（MemoryManager）
 - [x] 多层记忆架构：工作记忆（20 条上下文）+ 长期记忆（MySQL + BGE 语义搜索）
@@ -30,10 +31,10 @@
 - [x] 4 种自我记忆类型：self_interest / self_experience / self_opinion / self_habit
 - [x] 分层注入机制：显式层（fact+event）→ 情感层（episodic）→ 行为层（preference/procedural）
 - [x] mem0 v2 集成（后移除，改为本地 BGE + MySQL）
-- [x] 本地中文嵌入模型 BAAI/bge-small-zh-v1.5（512 维，无需额外 API）
+- [x] 本地中文嵌入模型 BAAI/bge-base-zh-v1.5（768 维，无需额外 API）
 - [x] 自动记忆提取：LLM 分类（7 种类型 + valence + confidence）→ MySQL + ChromaDB
-- [x] 语义召回：BGE embedding cosine similarity 搜索（200 候选 → 批量 encode → 排序）
-- [x] Pinned facts 保障：importance >= 0.8 的记忆强制注入，不参与排序竞争
+- [x] 语义召回：BGE embedding cosine similarity 搜索（200 候选 → 批量 encode → 排序，top_k=20）
+- [x] Pinned facts 保障：importance >= 0.7 的记忆强制注入（最多 4 条），不参与排序竞争
 - [x] 记忆衰减：90 天半衰期，未被访问的记忆重要性逐渐降低
 - [x] 记忆巩固：每 20 轮合并相关记忆，压缩冗余
 - [x] 休眠记忆唤醒：30 天未召回的语义相关记忆被主动消息系统重新激活
@@ -86,6 +87,13 @@
 - [x] `yuqing_mood_log` 表持久化心情变化历史
 - [x] 心情注入 system prompt（"你现在的状态" + "回复节奏"模板区块）
 - [x] API：`GET /api/mood/current`、`GET /api/mood/history`
+- [x] 跨会话心情保留：mood_session_peak/end 存入 app_settings，残留 48h 线性衰减到基线
+- [x] 非对称情绪传染：warmth α=0.10（慢跟随）vs energy α=0.20（快响应）
+- [x] 负面状态持久化：warmth < 0.25 时衰减速率减半
+- [x] 自适应基线引力：value > 0.85 或 < 0.15 时额外 baseline pull（防止极端值）
+- [x] 天花板/地板阻尼：接近 0/1 极值时边际递减（resistance=0.03）
+- [x] 情绪惯性：momentum 机制（velocity 跨会话保留，inertia=0.8）
+- [x] 7 天情绪趋势分析：get_mood_trend_summary()
 
 ### 人格系统（PersonalityEngine）
 - [x] YAML 人格配置 + 数据库覆写
@@ -163,9 +171,19 @@
 - [x] 昼夜节律：mood.py 深夜 energy -0.05
 - [x] 主动消息时段风格：proactive.py 深夜/清晨提示简短安静
 
+### 记忆召回优化 ✅ 已完成
+- [x] Embedding 模型升级：bge-small-zh-v1.5（512维）→ bge-base-zh-v1.5（768维），更强语义区分能力
+- [x] 召回容量扩容：语义搜索 top_k 10→20，fact 上限 6→8，episodic 上限 3→5，pinned facts 上限 2→4
+- [x] 查询增强：用最近 4 条消息拼接作为搜索 query（而非单条用户消息），提供更丰富的语义上下文
+- [x] 候选池优化：阈值 importance > 0.2 → > 0.05（扩大候选范围），排序改为 importance DESC（而非 last_accessed DESC）
+- [x] Pinned facts 阈值下调：0.8 → 0.7（更多高重要性记忆强制注入）
+- [x] 记忆提取上限提升：用户记忆 5→8 条/轮，自我记忆 3→5 条/轮
+- [x] Dormant 记忆阈值：importance > 0.2 → > 0.1（更多休眠记忆可被唤醒）
+- [x] Mood congruence：评分加入情绪一致性加成（warmth × valence × 0.15），情绪低落时优先召回积极记忆
+
 ---
 
-## 时间感知系统（Temporal Awareness）
+## ~~时间感知系统（Temporal Awareness）~~ ✅ 已完成
 
 ### 背景调研
 
