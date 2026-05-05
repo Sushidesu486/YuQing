@@ -263,15 +263,19 @@
 
 ### 6. 自我认知系统（SelfCognitionEngine）
 
-语晴不只是被动收集碎片化的自我记忆，还能将它们合成为连贯的自我叙事：
+语晴不只是被动收集碎片化的自我记忆，还能从中发现自己的变化，并逐步演化人格。
 
-**自我叙事合成**
+**L1 自我叙事合成**
 - 将零散 self_* 记忆 + YAML 性格 traits 综合为 3-5 句第一人称叙事
-- LLM prompt 包含性格维度数值，确保叙事风格一致（warmth 0.45 不会写出热情奔放的风格）
 - 缓存到 app_settings，self_* 记忆数量变化 ≥ 5 条时重新生成
 - 注入 system prompt「你发现自己的一些事」区块
 
-**设计原则**：YAML 静态骨架（不可变）+ 自我叙事（动态补充）共存，不冲突。
+**L2 Reflect-Evolve 人格演化**（基于 GLA/soul.py/MATE 论文）
+- **Reflect**：每 40 轮对话，LLM 从近期 self_* 记忆中提炼变化趋势（"我好像越来越愿意表达感受了"）
+- **Evolve**：独立 LLM 实例分析反思，提出结构化 JSON 特质更新（单次 ≤ 0.05）
+- **Guard Rails**：logistic saturation（软边界 [0,1]）、MAX_DRIFT 0.15（距 YAML 基线最大偏移）、完整审计日志
+- **Identity Hash**：首次启动用 5 个身份探针问题计算基线 SHA256，定期对比检测漂移
+- **设计原则**：YAML 静态骨架提供稳定性，Evolve 提供适应性增长，审计日志保证可追溯
 
 ### 7. 信息检索系统（InfoRetrievalEngine）
 
@@ -378,7 +382,7 @@ yuqing/
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
 │       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
-│       │   ├── self_cognition.py     # SelfCognitionEngine — 自我认知（叙事合成）
+│       │   ├── self_cognition.py     # SelfCognitionEngine — 自我认知（叙事合成 + Reflect-Evolve）
 │       │   ├── info_retrieval.py     # InfoRetrievalEngine — 信息检索（Tavily）
 │       │   ├── preferences.py        # PreferenceLearner — 用户偏好学习
 │       │   ├── proactive.py          # ProactiveManager — 主动消息系统
@@ -431,7 +435,7 @@ yuqing/
 | `yuqing_mood_log` | 语晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |
 | `personality_config` | 人格配置（JSON，单例） |
-| `app_settings` | 应用设置（KV）— 含自我叙事缓存、检索时间戳 |
+| `app_settings` | 应用设置（KV）— 含自我叙事缓存、身份 hash 基线、检索时间戳 |
 | `user_preferences` | 用户学习到的偏好 |
 | `knowledge_items` | 信息检索知识条目（带时效性，7 天过期） |
 | `memory_links` | 记忆关联链接（co_occurrence/consolidated，激活传播用） |
@@ -467,6 +471,15 @@ yuqing/
 | `MEMORY_LINK_LATERAL_INHIBITION` | true | 启用 Lateral Inhibition（Top-K 竞争） |
 | `MEMORY_LINK_LATERAL_K` | 15 | Lateral Inhibition 保留数 |
 | `MEMORY_LINK_ACTIVATION_THRESHOLD` | 0.1 | 激活值召回阈值 |
+
+### Reflect-Evolve 参数（.env）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `EVOLVE_ENABLED` | true | 是否启用人格演化 |
+| `EVOLVE_REFLECT_INTERVAL` | 40 | Reflect 触发间隔（每 N 条消息） |
+| `EVOLVE_MAX_DELTA` | 0.05 | 单次特质最大调整量 |
+| `EVOLVE_MAX_DRIFT` | 0.15 | 累计漂移上限（距 YAML 基线） |
 
 ### 主动消息参数（.env）
 

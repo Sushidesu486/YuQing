@@ -268,12 +268,12 @@ L1 自我叙事（Self-Narrative）✅ 已完成
   └─ self_* 记忆数量变化 ≥ 5 条时，LLM 综合为连贯叙事
   └─ 缓存到 app_settings KV，注入 prompt「你发现自己的一些事」
 
-L2 Reflect-Evolve（人格演化引擎）待实现
-  └─ Reflect: 每 20 轮对话，LLM 从最近 self_* 记忆 + 对话片段中合成自我反思（1-3 句）
+L2 Reflect-Evolve（人格演化引擎）✅ 已完成
+  └─ Reflect: 每 40 轮对话，LLM 从最近 self_* 记忆 + 对话片段中合成自我反思（1-3 句）
   └─ Evolve: 独立 LLM 实例分析反思，提出结构化 JSON 特质更新（每次 ≤ 0.05）
   └─ 漂移约束: logistic saturation + MAX_TRAIT_DRIFT = 0.15（距 YAML 基线最大偏移）
   └─ 审计日志: personality_evolution 表记录每次变更的 before/after/reasoning
-  └─ Identity Hash: 每周用 5 个身份探针问题测试，hash 对比基线检测漂移
+  └─ Identity Hash: 首次启动时用 5 个身份探针问题计算基线，SHA256 存储到 app_settings
 
 L3 关系认知（Relationship Awareness）待实现
   └─ 从对话历史中提取关系信号：互动频率、共同话题、情感里程碑
@@ -413,7 +413,8 @@ conversations ──┬── 1:N ── messages
                 ├── 1:N ── proactive_messages
                 └── 1:N ── yuqing_mood_log
 messages ──────── 1:N ── memories (source_message)
-personality_config (singleton)
+personality_config (singleton) — 含 Evolve 更新后的 traits/interests
+personality_evolution — 人格演化审计日志（before/after/reasoning/hash）
 yuqing_mood (singleton)
 app_settings (KV) — 含 self_narrative / knowledge 检索时间戳
 user_preferences (KV with confidence)
