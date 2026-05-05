@@ -246,28 +246,114 @@ MEMORY_LINK_SEMANTIC_THRESHOLD: float = 0.4
 
 ### 3.5 语晴自我认知深化（SelfCognitionEngine）
 
-当前 self_* 记忆只是碎片化条目收集（统一存储在 memories 表），已实现 L1 自我叙事合成。
+基于 GLA（Generative Life Agents, 2025）、soul.py（arXiv:2604.09588）、MATE（SSRN:6553448）的背调。
 
-**三层架构**：
+**核心发现**：
+- YAML 静态骨架 + 自我叙事（L1）共存是正确设计，但缺少从经验反馈到性格参数的闭环
+- GLA 的 Reflect-Evolve 架构最适合 YuQing：Reflect 合成洞察 → Evolve 提出结构化 JSON 更新 → 日志审计
+- soul.py 的 identity hash 提供了量化漂移检测方法：定期用身份探针问题测试，hash 对比基线
+- MATE 的 Hebbian micro-nudge + logistic saturation 确保特质变化有界、可复现
+
+**关键论文**：
+- GLA: [ResearchSquare PDF](https://www.researchsquare.com/article/rs-7018899/v1.pdf) | [GitHub](https://github.com/Eeman1113/Sira)
+- soul.py: [arXiv:2604.09588](https://arxiv.org/abs/2604.09588) | [GitHub](https://github.com/menonpg/soul.py)
+- MATE: [SSRN:6553448](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6553448)
+- Subaharan 情感动力学: [arXiv:2601.16087](https://arxiv.org/abs/2601.16087)
+- EmoACT (Affect Control Theory): [arXiv:2504.12125](https://arxiv.org/html/2504.12125v1)
+
+**三层架构（修订）**：
 
 ```
 L1 自我叙事（Self-Narrative）✅ 已完成
   └─ self_* 记忆数量变化 ≥ 5 条时，LLM 综合为连贯叙事
   └─ 缓存到 app_settings KV，注入 prompt「你发现自己的一些事」
 
-L2 关系认知（Relationship Awareness）待实现
+L2 Reflect-Evolve（人格演化引擎）待实现
+  └─ Reflect: 每 20 轮对话，LLM 从最近 self_* 记忆 + 对话片段中合成自我反思（1-3 句）
+  └─ Evolve: 独立 LLM 实例分析反思，提出结构化 JSON 特质更新（每次 ≤ 0.05）
+  └─ 漂移约束: logistic saturation + MAX_TRAIT_DRIFT = 0.15（距 YAML 基线最大偏移）
+  └─ 审计日志: personality_evolution 表记录每次变更的 before/after/reasoning
+  └─ Identity Hash: 每周用 5 个身份探针问题测试，hash 对比基线检测漂移
+
+L3 关系认知（Relationship Awareness）待实现
   └─ 从对话历史中提取关系信号：互动频率、共同话题、情感里程碑
   └─ 注入 prompt，让语晴知道自己和用户"走到哪一步了"
-  - [ ] 新增 `build_relationship_context()`：统计互动频率、共同话题、情感亲近度趋势
-  - [ ] 关系描述注入 system prompt
-  - [ ] 存储方案：复用 app_settings KV 或 conversations 表扩展字段
+  - [ ] build_relationship_context(): 统计互动频率、共同话题、情感亲近度趋势
 
-L3 自我变化追踪（Self-Evolution）待实现
-  └─ 检测 self_* 记忆中的矛盾/演变信号
-  └─ 复用错误记忆纠正机制
-  - [ ] 新增 memory_type=self_evolution 记录变化事件
-  - [ ] 变化事件触发自我叙事重新生成
-  - [ ] 检测兴趣转移、观点变化的 LLM prompt
+L4 主动自我反思（Proactive Reflection）远期
+  └─ 每日定时回顾当天对话，产出自省（存储到 self_reflections 表）
+  └─ 累积反思作为 Evolve 的额外输入
+  └─ 语晴偶尔在对话中引用反思（"我昨天想了一件事..."）
+```
+
+**L2 具体设计**：
+
+```sql
+CREATE TABLE personality_evolution (
+    id VARCHAR(32) PRIMARY KEY,
+    triggered_at DATETIME,
+    trigger_type ENUM('reflect', 'drift_correction'),
+    reflection_text TEXT,
+    evolve_json JSON,              -- {"traits": {"warmth": 0.02}, "interests": {"add": [...]}}
+    reasoning TEXT,
+    applied BOOLEAN DEFAULT FALSE,
+    snapshot_before JSON,          -- 演化前的完整性格状态
+    snapshot_after JSON,           -- 演化后的完整性格状态
+    identity_hash_before VARCHAR(64),
+    identity_hash_after VARCHAR(64)
+);
+```
+
+- `Reflect` 触发: `check_and_update()` 中 msg_count % 20 时触发
+- `Evolve` prompt: 分析反思 → 判断是否需要调整 → 结构化 JSON 输出 → 大多数时候返回空 updates
+- `apply_evolve()`: 解析 JSON → 校验漂移范围 → logistic saturation → 更新 personality_config → 写审计日志
+- `compute_identity_hash()`: 5 个固定探针问题 → LLM 回答 → SHA256 前 16 位 → 对比基线
+- 漂移修正: hash 偏移超阈值 → 回滚到 YAML 基线 + 保留累积漂移的 50%
+
+**Guard Rails（防止人格崩塌）**:
+1. 单次特质调整 ≤ 0.05（防止大跳变）
+2. 累计漂移 ≤ MAX_TRAIT_DRIFT = 0.15（距 YAML 基线）
+3. Logistic saturation: `saturate(v) = 1/(1+exp(-10*(v-0.5)))`（软边界 [0,1]）
+4. 非对称衰减: 负向漂移（冷漠化）衰减更快（12 小时恢复 30%），正向漂移保留更久
+5. 审计日志不可删除，可追溯每次变更链: trait change → Evolve JSON → Reflection → memories
+
+---
+
+### 3.6 情感真实性增强（Emotional Authenticity）
+
+基于 Subaharan (2026)、EmoACT (2025)、Chain-of-Emotion (PLOS ONE, 2024) 的背调。
+
+**当前问题**：
+- 语晴心情在会话间几乎完全衰减到基线（48h 后无痕迹）
+- 情绪触发靠关键词匹配（`_WARM_KEYWORDS`），不是事件评估
+- 情绪表达是显式的（"我现在很开心"），不是行为层面的
+- 记忆无情感标签，无法实现情绪一致性召回
+
+**核心发现**：
+- Subaharan (2026): 二阶情感动力学（位置+速度）比一阶 EMA 更真实，mu=0.8 惯性最佳
+- EmoACT: 情绪 = 身份与印象的落差，不是关键词匹配。事件评估 → 情绪生成 → 表达
+- ScienceDirect (2026): AI 过度积极表达会让用户感到不真实。微妙行为变化 > 显式情绪声明
+- 情绪惯性: 负面状态应比正面状态持续更久（人类负面偏见），让关系冲突有真实感
+
+**实施路线**：
+
+```
+Phase 1 — 低成本高回报（优先）
+  ├─ 情感记忆标签: memories 表已有 valence，记录提取时对话的平均心情
+  ├─ 情绪一致性召回: 当前心情 × 记忆 valence 作为检索偏置（warm × 0.15）
+  ├─ 跨会话心情保留: 不完全衰减到基线，保留上次会话峰值的 40% + 结束值的 40%
+  └─ 微妙行为编码: system prompt 用行为变化（更长回复、更多提问）替代情绪声明
+
+Phase 2 — 中等投入
+  ├─ 情感动量: 新增 velocity 维度（warmth_velocity 等），跨会话保留方向但衰减 50%/天
+  ├─ 事件评估替代关键词: 轻量 prompt 判断事件类型 → 可取性 → 期望度 → 心情偏移
+  ├─ 非对称情绪传染: energy/arousal 快速跟随用户，warmth 缓慢跟随（alpha 0.08 vs 0.15）
+  └─ 负面状态持久化: warmth < 0.25 时减慢衰减速率（hourly_decay 0.02 → 0.01）
+
+Phase 3 — 差异化
+  ├─ 自适应基线引力: 极端情绪时增强回归基线的拉力
+  ├─ 情绪天花板/地板: 接近极值时增加阻力（边际递减）
+  └─ 情绪自反思: 语晴分析自己的情绪趋势（"我最近好像有点容易烦躁"）
 ```
 
 ---
