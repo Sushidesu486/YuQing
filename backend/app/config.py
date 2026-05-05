@@ -141,9 +141,21 @@ class Settings(BaseSettings):
 
     # Sleep cleanup (daily automatic memory maintenance)
     MEMORY_SLEEP_CLEANUP_ENABLED: bool = True
-    MEMORY_SLEEP_CLEANUP_HOUR: int = 4                 # 凌晨 4 点执行（模拟睡眠）
+    MEMORY_SLEEP_CLEANUP_HOUR: int = 7                 # 早上 7 点执行（模拟睡眠）
     MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE: bool = True    # 对聚类相似记忆做 LLM 合并
     MEMORY_SLEEP_CLEANUP_CLUSTER_THRESHOLD: float = 0.70  # 聚类合并相似度阈值
+
+    # Sleep cleanup: synaptic downscaling (SHY)
+    SLEEP_DOWNSCALE_ENABLED: bool = True
+    SLEEP_DOWNSCALE_FACTOR: float = 0.03          # importance *= (1 - factor)
+
+    # Sleep cleanup: selective replay (TAG scoring)
+    SLEEP_REPLAY_ENABLED: bool = True
+    SLEEP_REPLAY_STRENGTHEN: float = 0.05         # TAG >= 0.5: importance += this
+    SLEEP_REPLAY_WEAKEN: float = 0.03             # TAG < 0.3: importance -= this
+
+    # Sleep cleanup: pruning stale memories + orphan links
+    SLEEP_PRUNE_ENABLED: bool = True
 
     # Debug
     LOG_LEVEL: str = "INFO"

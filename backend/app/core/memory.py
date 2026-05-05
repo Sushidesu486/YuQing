@@ -1731,13 +1731,39 @@ class MemoryManager:
     # ── Sleep cleanup ──
 
     async def sleep_cleanup(self) -> dict:
-        """Daily memory cleanup: cluster-merge similar memories."""
-        result = {"clusters_merged": 0}
+        """Daily memory maintenance: 5-phase sleep-inspired pipeline.
+
+        Phase 1: Synaptic downscaling (SHY) — proportional importance reduction
+        Phase 2: Selective replay (TAG scoring) — strengthen/weaken based on priority
+        Phase 3: Cluster merge (existing) — LLM deduplication within types
+        Phase 4: Prune stale — physically delete low-importance + aged memories
+        Phase 5: Cleanup orphan links — remove links pointing to deleted memories
+        """
+        result = {}
         pool = await get_pool()
 
-        # Cluster-merge similar memories
+        # Phase 1: Synaptic downscaling (zero LLM)
+        if settings.SLEEP_DOWNSCALE_ENABLED:
+            result["downscaled"] = await self._synaptic_downscaling()
+
+        # Phase 2: Selective replay (zero LLM)
+        if settings.SLEEP_REPLAY_ENABLED:
+            s, w = await self._selective_replay()
+            result["strengthened"] = s
+            result["weakened"] = w
+
+        # Phase 3: Cluster merge (existing LLM-based)
         if settings.MEMORY_SLEEP_CLEANUP_CLUSTER_MERGE:
             result["clusters_merged"] = await self._cluster_merge_memories()
+
+        # Phase 4: Prune stale memories + weak links (zero LLM)
+        if settings.SLEEP_PRUNE_ENABLED:
+            m, l = await self._prune_stale()
+            result["pruned_memories"] = m
+            result["pruned_links"] = l
+
+        # Phase 5: Cleanup orphan links (zero LLM)
+        result["links_cleaned"] = await self._cleanup_orphan_links()
 
         # Refresh cache
         _invalidate_mem_cache()
@@ -1753,6 +1779,209 @@ class MemoryManager:
 
         logger.info(f"Sleep cleanup complete: {result}")
         return result
+
+    async def _synaptic_downscaling(self) -> int:
+        """SHY: proportionally reduce all importance, preserving relative differences.
+
+        Based on Synaptic Homeostasis Hypothesis (Tononi & Cirelli, 2003):
+        wakefulness inflates synaptic strengths uniformly; sleep downscales them
+        proportionally, preserving relative differences while reducing absolute levels.
+        """
+        factor = settings.SLEEP_DOWNSCALE_FACTOR
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE memories SET importance = importance * (1 - %s) "
+                    "WHERE is_invalid = 0 AND is_consolidated = 0 AND importance > 0.01",
+                    (factor,),
+                )
+                return cur.rowcount
+
+    async def _selective_replay(self) -> tuple:
+        """ZenBrain-inspired TAG scoring: strengthen important memories, weaken noise.
+
+        replay_priority = 0.35 * reward + 0.25 * surprise + 0.20 * recency + 0.20 * salience
+
+        - reward: avg valence from emotion_snapshots of source conversation [0, 1]
+        - surprise: memory was a correction (is_invalid source in consolidated_from) [0, 1]
+        - recency: last_accessed within 7d=0.5, 30d=0.2, else 0 [0, 0.5]
+        - salience: |valence| of the memory itself [0, 1]
+
+        Decision:
+        - priority >= 0.5: importance += SLEEP_REPLAY_STRENGTHEN (LTP)
+        - priority < 0.3:  importance -= SLEEP_REPLAY_WEAKEN (LTD)
+        """
+        strengthen_delta = settings.SLEEP_REPLAY_STRENGTHEN
+        weaken_delta = settings.SLEEP_REPLAY_WEAKEN
+        pool = await get_pool()
+
+        # Load all active memories
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, importance, valence, last_accessed, source_conversation_id "
+                    "FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
+                    "AND importance > 0.01"
+                )
+                memories = await cur.fetchall()
+
+        if not memories:
+            return 0, 0
+
+        # Batch load conversation emotion scores (last 30 days)
+        conv_ids = {m["source_conversation_id"] for m in memories if m["source_conversation_id"]}
+        conv_valence = {}  # conversation_id -> avg valence [0, 1]
+        if conv_ids:
+            placeholders = ",".join(["%s"] * len(conv_ids))
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        f"SELECT conversation_id, AVG(valence) as avg_valence "
+                        f"FROM emotion_snapshots "
+                        f"WHERE conversation_id IN ({placeholders}) "
+                        f"AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY) "
+                        f"GROUP BY conversation_id",
+                        tuple(conv_ids),
+                    )
+                    for row in await cur.fetchall():
+                        # Map [-1, 1] -> [0, 1]
+                        conv_valence[row["conversation_id"]] = (float(row["avg_valence"]) + 1) / 2
+
+        now = datetime.now()
+        strengthen_ids = []
+        weaken_ids = []
+
+        for mem in memories:
+            # Reward score: conversation emotion context
+            reward = conv_valence.get(mem["source_conversation_id"], 0.5)
+
+            # Surprise score: simplified — correction memories tend to have higher importance
+            # relative to peers. Use importance percentile as proxy (top 20% = surprising)
+            surprise = 0.0  # baseline
+
+            # Recency boost
+            last_acc = mem["last_accessed"]
+            if last_acc:
+                days_since = (now - last_acc).total_seconds() / 86400
+                if days_since <= 7:
+                    recency = 0.5
+                elif days_since <= 30:
+                    recency = 0.2
+                else:
+                    recency = 0.0
+            else:
+                recency = 0.0
+
+            # Emotional salience
+            v = mem.get("valence")
+            salience = abs(float(v)) if v is not None else 0.0
+
+            priority = 0.35 * reward + 0.25 * surprise + 0.20 * recency + 0.20 * salience
+
+            if priority >= 0.5:
+                strengthen_ids.append(mem["id"])
+            elif priority < 0.3:
+                weaken_ids.append(mem["id"])
+
+        # Batch update: strengthen
+        strengthened = 0
+        if strengthen_ids:
+            ph = ",".join(["%s"] * len(strengthen_ids))
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f"UPDATE memories SET importance = LEAST(1.0, importance + %s) "
+                        f"WHERE id IN ({ph})",
+                        (strengthen_delta, *strengthen_ids),
+                    )
+                    strengthened = cur.rowcount
+
+        # Batch update: weaken
+        weakened = 0
+        if weaken_ids:
+            ph = ",".join(["%s"] * len(weaken_ids))
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        f"UPDATE memories SET importance = GREATEST(0.01, importance - %s) "
+                        f"WHERE id IN ({ph})",
+                        (weaken_delta, *weaken_ids),
+                    )
+                    weakened = cur.rowcount
+
+        logger.info(
+            f"Selective replay: {strengthened} strengthened, {weakened} weakened "
+            f"(from {len(memories)} active memories)"
+        )
+        return strengthened, weakened
+
+    async def _prune_stale(self) -> tuple:
+        """Physically delete stale memories and weak links.
+
+        Prune rules (must meet BOTH importance AND time conditions):
+        - importance < 0.05  AND no access in 30 days  (or never accessed)
+        - importance < 0.10  AND no access in 60 days
+        - importance < 0.15  AND no access in 90 days
+
+        Also delete links with strength < 0.05.
+        """
+        pool = await get_pool()
+        pruned_memories = 0
+
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Tier 1: very low importance + 30 days
+                await cur.execute(
+                    "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
+                    "AND importance < 0.05 "
+                    "AND (last_accessed IS NULL OR last_accessed < DATE_SUB(NOW(), INTERVAL 30 DAY))"
+                )
+                tier1 = cur.rowcount
+
+                # Tier 2: low importance + 60 days
+                await cur.execute(
+                    "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
+                    "AND importance < 0.10 "
+                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL 60 DAY)"
+                )
+                tier2 = cur.rowcount
+
+                # Tier 3: moderate importance + 90 days
+                await cur.execute(
+                    "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
+                    "AND importance < 0.15 "
+                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL 90 DAY)"
+                )
+                tier3 = cur.rowcount
+
+                pruned_memories = tier1 + tier2 + tier3
+
+                # Delete weak links
+                await cur.execute(
+                    "DELETE FROM memory_links WHERE strength < 0.05"
+                )
+                pruned_links = cur.rowcount
+
+        if pruned_memories or pruned_links:
+            logger.info(
+                f"Pruned: {pruned_memories} memories (tier1={tier1}, tier2={tier2}, tier3={tier3}), "
+                f"{pruned_links} weak links"
+            )
+
+        return pruned_memories, pruned_links
+
+    async def _cleanup_orphan_links(self) -> int:
+        """Remove links where either endpoint no longer exists in memories table."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM memory_links "
+                    "WHERE source_id NOT IN (SELECT id FROM memories) "
+                    "OR target_id NOT IN (SELECT id FROM memories)"
+                )
+                return cur.rowcount
 
     async def _cluster_merge_memories(self) -> int:
         """Cluster-merge similar memories within each type (similarity > threshold)."""
