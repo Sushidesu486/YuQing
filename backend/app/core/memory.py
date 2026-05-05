@@ -296,7 +296,7 @@ class MemoryManager:
                 await cur.execute(
                     "SELECT id, content, memory_type, importance, valence, confidence "
                     "FROM memories WHERE importance >= %s AND is_invalid = 0 "
-                    "AND (memory_type NOT LIKE 'self_%' OR memory_type IS NULL) "
+                    "AND (memory_type NOT LIKE 'self_%%' OR memory_type IS NULL) "
                     "ORDER BY importance DESC LIMIT 10",
                     (settings.MEMORY_PINNED_FACTS_THRESHOLD,)
                 )
