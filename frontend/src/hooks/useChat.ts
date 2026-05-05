@@ -99,6 +99,7 @@ export function useChat() {
       let fullContent = '';
       let lineBuffer = '';
       let doneHandled = false;
+      let streamFinished = false;
 
       const applyCleanedContent = (messageId?: string) => {
         const cleaned = fullContent
@@ -124,6 +125,7 @@ export function useChat() {
       };
 
       while (true) {
+        if (streamFinished) break;
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -168,6 +170,9 @@ export function useChat() {
               conversationIdRef.current = data.conversation_id;
               localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
             }
+            // Exit read loop immediately — server may not close the SSE connection
+            streamFinished = true;
+            break;
           }
         }
       }

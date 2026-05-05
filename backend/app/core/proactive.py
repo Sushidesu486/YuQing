@@ -210,6 +210,18 @@ class ProactiveManager:
         elif trigger_type == "memory":
             extra = f"用户之前提到: {detail.get('memory_content', '')}"
 
+        # Add time-of-day context to proactive messages
+        if settings.TEMPORAL_ENABLED:
+            try:
+                from app.core.temporal import get_temporal_context, is_late_night
+                temporal = await get_temporal_context()
+                if is_late_night():
+                    extra += "\n现在是很晚了，消息要更简短安静。"
+                elif temporal.time_zone.value == "early_morning":
+                    extra += "\n现在是一大早。"
+            except Exception:
+                pass
+
         prompt = PROACTIVE_PROMPT_ZH.format(
             trigger_reason=reason_map[trigger_type],
             extra_context=extra,

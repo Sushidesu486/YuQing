@@ -42,6 +42,15 @@ class CognitiveProcessor:
         # --- Phase 2: Get current mood ---
         current_mood = await mood_regulator.get_current_mood(conversation_id)
 
+        # --- Phase 2.2: Compute temporal context ---
+        temporal_context = None
+        if settings.TEMPORAL_ENABLED:
+            try:
+                from app.core.temporal import get_temporal_context
+                temporal_context = await get_temporal_context(conversation_id)
+            except Exception as e:
+                logger.debug(f"Temporal context failed: {e}")
+
         # --- Phase 2.5: Update YuQing's own mood ---
         yuqing_mood = None
         try:
@@ -77,8 +86,10 @@ class CognitiveProcessor:
             yield {"event": "mood", "data": json.dumps({"type": "yuqing_mood", **yuqing_mood}, ensure_ascii=True)}
 
         # --- Phase 3: Memory recall (layered) ---
+        current_mood_warmth = yuqing_mood["warmth"] if yuqing_mood else 0.0
         _, layered_memory = await memory_manager.build_context(
-            conversation_id, user_message
+            conversation_id, user_message,
+            current_mood_warmth=current_mood_warmth,
         )
 
         # Touch all recalled memories (update access time)
@@ -115,6 +126,7 @@ class CognitiveProcessor:
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
             recalled_memories=layered_memory,
             yuqing_mood=yuqing_mood,
+            temporal_context=temporal_context,
         )
 
         # --- Phase 5: Store user message(s) (split batched messages) ---
@@ -191,6 +203,17 @@ class CognitiveProcessor:
                         "UPDATE conversations SET title = %s WHERE id = %s AND (title = '' OR title IS NULL)",
                         (title, conversation_id),
                     )
+
+        # --- Done (yield immediately after storing, before background tasks) ---
+        yield {
+            "event": "done",
+            "data": json.dumps(
+                {"type": "done", "message_id": assistant_msg_id, "conversation_id": conversation_id},
+                ensure_ascii=True,
+            ),
+        }
+
+        # --- Phase 9: Background tasks (fire-and-forget, runs after done is sent) ---
 
         # --- Phase 9: Background tasks ---
 
@@ -280,15 +303,6 @@ class CognitiveProcessor:
                     logger.info(f"Preferences learned: {learned}")
         except Exception as e:
             logger.debug(f"Preference learning skipped: {e}")
-
-        # --- Done ---
-        yield {
-            "event": "done",
-            "data": json.dumps(
-                {"type": "done", "message_id": assistant_msg_id, "conversation_id": conversation_id},
-                ensure_ascii=True,
-            ),
-        }
 
 
 cognitive_processor = CognitiveProcessor()

@@ -252,6 +252,7 @@ class MemoryManager:
         self,
         conversation_id: str,
         user_message: str,
+        current_mood_warmth: float = 0.0,
     ) -> tuple:
         """Build message context: recent messages + layered long-term memories.
 
@@ -324,7 +325,7 @@ class MemoryManager:
                 recalled.append(d)
 
         # 6. Build layered memory structure
-        layered_memory = await self._build_layered_memory(recalled)
+        layered_memory = await self._build_layered_memory(recalled, current_mood_warmth=current_mood_warmth)
 
         return messages_context, layered_memory
 
@@ -687,7 +688,7 @@ class MemoryManager:
         logger.info(f"Activation spread: {len(seed_ids)} seeds → {len(linked_memories)} recalled")
         return linked_memories
 
-    async def _build_layered_memory(self, recalled: list) -> dict:
+    async def _build_layered_memory(self, recalled: list, current_mood_warmth: float = 0.0) -> dict:
         """Transform recalled memories into a layered structure.
 
         Args:
@@ -753,9 +754,33 @@ class MemoryManager:
                 "created_at_relative": _relative_time(mem["id"]),
             })
 
-        # Sort remaining memories by triple hybrid score (semantic + activation + importance)
+        # Sort remaining memories by triple hybrid score (semantic + activation + importance + recency)
+        def _recency_bonus(mem_id: str) -> float:
+            """Small bonus for recently created memories."""
+            dt = created_at_map.get(mem_id)
+            if not dt:
+                return 0.0
+            if isinstance(dt, datetime):
+                days = (datetime.utcnow() - dt).total_seconds() / 86400
+            else:
+                days = (datetime.utcnow() - datetime.fromisoformat(str(dt))).total_seconds() / 86400
+            if days < 7:
+                return 0.05
+            if days < 30:
+                return 0.02
+            return 0.0
+
+        def _mood_congruence_bonus(mem: dict) -> float:
+            """Bonus for memories whose valence matches current mood warmth."""
+            if current_mood_warmth == 0.0:
+                return 0.0
+            valence = float(mem.get("metadata", {}).get("valence", 0))
+            if valence == 0:
+                return 0.0
+            return current_mood_warmth * valence * settings.MOOD_CONGRUENT_RECALL_WEIGHT
+
         def _relevance_score(mem: dict) -> float:
-            """Triple Hybrid Score: semantic × 0.5 + activation × 0.3 + importance × 0.2."""
+            """Triple Hybrid Score: semantic × 0.5 + activation × 0.3 + importance × 0.2 + recency + mood."""
             semantic = 1.0 - mem.get("distance", 1.0)
             importance = float(mem.get("metadata", {}).get("importance", 0.5))
             activation = mem.get("_activation", 1.0 if not mem.get("_via_link") else 0.0)
@@ -765,7 +790,9 @@ class MemoryManager:
             # Access factor boost
             access_factor = mem.get("_access_factor", 1.0)
             effective_importance = importance * access_factor
-            return semantic * 0.5 + activation * 0.3 + effective_importance * 0.2
+            recency = _recency_bonus(mem.get("id", ""))
+            mood_cong = _mood_congruence_bonus(mem)
+            return semantic * 0.5 + activation * 0.3 + effective_importance * 0.2 + recency + mood_cong
 
         remaining.sort(key=_relevance_score, reverse=True)
 
@@ -796,6 +823,7 @@ class MemoryManager:
                 layered["episodic"].append({
                     "content": content,
                     "valence": valence,
+                    "created_at_relative": _relative_time(mem["id"]),
                 })
 
             elif mt == "emotion":
@@ -805,6 +833,7 @@ class MemoryManager:
                 layered["emotion_influences"].append({
                     "trigger": trigger,
                     "expected_valence": expected_valence,
+                    "created_at_relative": _relative_time(mem["id"]),
                 })
 
             elif mt in ("preference", "procedural"):

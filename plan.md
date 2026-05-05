@@ -1,6 +1,6 @@
 # YuQing 语晴 — 开发计划
 
-> 最后更新：2026-05-04
+> 最后更新：2026-05-05
 
 ---
 
@@ -153,6 +153,231 @@
 - [ ] `yuqing_mood_log`：无清理机制，数据无限增长
 - [ ] `knowledge_items`：无清理机制，过期数据不会自动删除（查询时已通过 expires_at 过滤）
 - [ ] `memories`：`source_message_id` 仍未填充（extract 时未传 message_id，仅填充了 source_conversation_id）
+
+### 时间感知系统（Temporal Awareness）✅ 已完成
+- [x] 新建 `temporal.py`：TemporalContext dataclass，SessionGapTier（6 档），TimeOfDayZone（6 档），关系任期、会话时长、今日统计
+- [x] 集成认知管线：cognitive.py Phase 2.2 计算 temporal_context，传入 personality.build_system_prompt()
+- [x] 模板注入：system_zh.txt.j2 / system_en.txt.j2 新增「时间感知」区块（时段、间隔、任期、时长、深夜提示）
+- [x] 记忆时间维度补全：episodic/emotion 补上 `created_at_relative`，facts 模板显示"（3天前了解到）"
+- [x] 召回评分加 recency bonus：近 7 天 +0.05，近 30 天 +0.02
+- [x] 昼夜节律：mood.py 深夜 energy -0.05
+- [x] 主动消息时段风格：proactive.py 深夜/清晨提示简短安静
+
+---
+
+## 时间感知系统（Temporal Awareness）
+
+### 背景调研
+
+**当前语晴的时间感知能力**：
+
+语晴对时间的感知几乎是"盲"的。当前代码中只有零散的时间相关逻辑，没有统一的时间上下文模块：
+
+| 现有能力 | 位置 | 问题 |
+|---------|------|------|
+| 返场检测 | cognitive.py:49-62 | 二值判断：≥4h 就是"缺席"，没有中间状态 |
+| 缺席检测 | proactive.py:88-111 | 只返回 hours_absent 数字，没有分级语义 |
+| 时段问候 | proactive.py:113-143 | 只有 morning/evening 两档，不影响人格表现 |
+| 心情衰减 | mood.py:269-298 | 线性衰减到固定 absence baseline，没有时段差异 |
+| msg_count | cognitive.py:207 | 只用于触发定期任务，不注入 prompt |
+
+**核心缺失**：
+1. 语晴不知道"我和这个人认识多久了"（关系任期）
+2. 语晴不知道"现在是深夜还是下午"（时段感知不影响回复风格）
+3. 语晴不知道"用户刚走开5分钟还是消失了3天"（会话间隔语义）
+4. 语晴不知道"这轮对话已经聊了2小时"（对话时长感知）
+5. 记忆召回没有时间锚定（无法说"上次你提到X是上周"）
+
+**学术与开源参考**：
+- **Zep**（[GitHub](https://github.com/getzep/zep)）：最成熟的时间感知记忆系统。核心设计：消息自动标注 `created_at`，召回时按时间排序，`session_summary` 机制跨会话传递上下文。时间戳作为一等公民贯穿整个记忆生命周期。
+- **Cognee**（[GitHub](https://github.com/topoteretes/cognee)）：temporal cognification 框架，时间维度作为记忆图的固有属性，支持时间范围查询（"上个月"）。
+- **passage-of-time-mcp**（[GitHub](https://github.com/mcndt/passage-of-time-mcp)）：轻量 MCP 插件，返回当前时间、距上次交互间隔、当日时段描述。
+- **MemGPT/Letta**：消息列表按时间排序，对话历史有清晰的时间边界。
+- **Human temporal cognition**（认知心理学）：人类的时间感知分为时间顺序（sequence）、时间持续（duration）、时间频率（frequency）三个维度。Companion AI 应至少覆盖这三个维度。
+
+### 可信性分析
+
+| 维度 | 可信性 | 说明 |
+|------|--------|------|
+| 会话间隔感知 | ⭐⭐⭐⭐⭐ | 纯计算，零风险。messages 表已有 created_at，查询最近消息时间戳即可。分档语义（刚走开/半天没来/几天没来）提升回复自然度。 |
+| 时段感知 | ⭐⭐⭐⭐⭐ | 纯计算。`datetime.now().hour` 映射到时段描述，注入 prompt 让语晴知道"现在是深夜/下午"。低风险高回报。 |
+| 关系任期 | ⭐⭐⭐⭐⭐ | `conversations.created_at` 或最早消息时间 → 计算认识天数。纯查询，无风险。让语晴能说"我们认识快一个月了"。 |
+| 对话时长感知 | ⭐⭐⭐⭐ | 当前会话的消息跨度。可能影响回复节奏（聊久了可以更放松）。低风险。 |
+| 时间锚定记忆 | ⭐⭐⭐⭐ | 记忆的 created_at 在查询时转为相对时间描述（"上周"、"昨天"、"去年"）。纯格式化，无风险。 |
+| 昼夜节律 | ⭐⭐⭐ | 深夜语晴应该更安静/迷糊，白天更活跃。中度风险（过度表演），需要微妙编码。 |
+| 时段情感调制 | ⭐⭐⭐ | 不同时段的心情基线微调（凌晨 baseline 更低沉）。需要和 mood.py 联动。 |
+
+### 优化点分析
+
+时间感知带来的系统性优化：
+
+1. **回复自然度提升**：语晴能根据时段调整语气（深夜简短、白天正常），根据间隔调整开场（"刚走？" vs "好久不见"），根据认识天数调整亲密程度暗示
+2. **记忆召回增强**：时间锚定记忆让语晴能引用具体时间（"你上个月说的那个项目"），比纯内容引用更真实
+3. **心情系统深化**：昼夜节律让心情变化更有物理基础（凌晨能量低不是随机的，是"困了"）
+4. **主动消息个性化**：不同时段的主动消息风格不同（深夜温柔、白天随意）
+5. **关系认知基础**：任期追踪是 L3 关系认知的前置条件
+6. **跨会话连续性**：session gap 分档让跨会话对话不再是"失忆重启"
+
+### 实施设计
+
+#### 核心模块：`backend/app/core/temporal.py`
+
+新建 `TemporalContext` dataclass，统一计算所有时间维度的上下文：
+
+```python
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+class SessionGapTier(Enum):
+    CONTINUATION = "continuation"     # < 10 min — 没走远
+    SHORT_BREAK = "short_break"       # 10min ~ 2h — 短暂离开
+    SAME_DAY = "same_day"             # 2h ~ 当天早些时候
+    DAY_GAP = "day_gap"               # 昨天或前天
+    WEEK_GAP = "week_gap"             # 3-7 天
+    LONG_ABSENCE = "long_absence"     # > 7 天
+
+class TimeOfDayZone(Enum):
+    EARLY_MORNING = "early_morning"   # 5-8
+    MORNING = "morning"               # 8-12
+    AFTERNOON = "afternoon"           # 12-17
+    EVENING = "evening"               # 17-21
+    NIGHT = "night"                   # 21-24
+    LATE_NIGHT = "late_night"         # 0-5
+
+@dataclass
+class TemporalContext:
+    # 当前时间
+    current_time: datetime
+    time_zone: TimeOfDayZone
+    time_description_zh: str          # "下午三点"、"凌晨两点半"
+
+    # 会话间隔
+    minutes_since_last_message: float
+    session_gap: SessionGapTier
+    gap_description_zh: str           # "你刚走开一会儿"、"好久不见"
+
+    # 关系任期
+    days_known: int
+    relationship_description_zh: str  # "我们认识快一个月了"
+
+    # 对话时长（当前会话）
+    session_duration_minutes: float
+    session_message_count: int
+    session_description_zh: str       # "已经聊了一个多小时了"
+
+    # 今日时段统计
+    messages_today: int
+    is_first_message_today: bool
+```
+
+#### 集成点
+
+| 集成位置 | 用途 | 改动量 |
+|---------|------|--------|
+| `cognitive.py` Phase 2.5 | 计算 TemporalContext，传入后续管线 | 新增 ~5 行 |
+| `personality.py build_system_prompt()` | 新增 `temporal_context` 参数传入模板 | 改签名 + 传参 |
+| `system_zh.txt.j2` | 新增时间上下文注入区块 | 新增 ~15 行模板 |
+| `mood.py` | 昼夜节律微调基线（深夜 energy-0.05） | 改 `_compute_energy_signal` |
+| `proactive.py` | 主动消息利用时间上下文 | 改 `_generate_message` 的 extra_context |
+| `memory.py build_context()` | 记忆召回加时间锚定（relative time 描述） | 格式化 created_at |
+
+#### 数据库
+
+无需新建表。所有时间信息来自现有 `messages.created_at` 和 `conversations.created_at` 查询。
+
+#### 配置项（config.py）
+
+```python
+TEMPORAL_ENABLED: bool = True
+TEMPORAL_CONTINUATION_MINUTES: int = 10     # < 此值为"刚走"
+TEMPORAL_SHORT_BREAK_MINUTES: int = 120     # < 此值为"短暂离开"
+TEMPORAL_LATE_NIGHT_START: int = 0          # 凌晨时段开始
+TEMPORAL_LATE_NIGHT_END: int = 5            # 凌晨时段结束
+TEMPORAL_ENERGY_NIGHT_PENALTY: float = 0.05 # 深夜能量衰减
+```
+
+#### prompt 注入示例
+
+```
+{% if temporal_context %}
+## 时间感知
+{% if temporal_context.is_first_message_today %}
+今天是 {{ temporal_context.time_description_zh }}，这是用户今天第一次找你。
+{% else %}
+现在是 {{ temporal_context.time_description_zh }}。
+{% endif %}
+{% if temporal_context.gap_description_zh and temporal_context.session_gap.value != "continuation" %}
+{{ temporal_context.gap_description_zh }}。
+{% endif %}
+{% if temporal_context.relationship_description_zh %}
+{{ temporal_context.relationship_description_zh }}。
+{% endif %}
+{% if temporal_context.session_duration_minutes > 60 %}
+{{ temporal_context.session_description_zh }}，可以稍微放松一些。
+{% endif %}
+{% endif %}
+```
+
+### 记忆的时间维度（现状分析与改进）
+
+**现状**：每条记忆都有 `created_at`，但时间信息的利用非常薄弱：
+
+| 记忆类型 | `created_at_relative` 是否计算 | 模板是否显示时间 | 问题 |
+|---------|------|------|------|
+| fact | ✅ 已计算 | ❌ 只显示 `{{ mem.content }}` | 知道用户换了工作，但不知道什么时候换的 |
+| event | ✅ 已计算 | ✅ `{{ mem.created_at_relative }}` | 唯一正常的时间展示 |
+| episodic | ❌ 未计算 | ❌ 无时间字段 | 带有强烈情绪的场景经历，完全丢失时间锚点 |
+| emotion | ❌ 未计算 | N/A（转为 trigger） | 情感模式无时间上下文 |
+| preference | 部分（fallback 到 fact 时） | ❌ | 用户偏好可能有变化历史，但没有时间线 |
+
+**`_time_ago()` 已存在**（memory.py:203-219），返回"今天/昨天/3天前/2周前/3个月前/2年前"，直接复用。
+
+**改进设计**：
+
+1. **所有记忆类型统一计算 `created_at_relative`**：build_context() 中 episodic、emotion 等全部补上
+2. **模板全面显示时间**：
+   - facts：`- {{ mem.content }}（{{ mem.created_at_relative }}了解到）`
+   - episodic：`- {{ mem.content }}（{{ mem.created_at_relative }}）`
+   - preference/procedural 转为 behavior_rules 时不需要时间（规则是当前状态）
+3. **召回评分加入时间新鲜度因子**：recency 作为 Triple Hybrid Score 的第四维度
+   - 近 7 天记忆 +0.05 bonus，近 30 天 +0.02，更早的 +0
+   - 权重不宜过大（记忆内容相关性 > 新鲜度），作为 tiebreaker
+4. **时间锚定记忆召回**（Phase 3.6 情感真实性的 mood-congruent recall 前置）：
+   - 当前对话提到"上次"、"之前"、"去年"等时间词时，优先召回对应时间段的记忆
+   - LLM prompt 中已有 `recalled_memories`，但语晴无法说"你去年说的那个"因为不知道记忆的时间
+
+### 实施路线
+
+```
+Phase 1 — 基础时间上下文（核心，优先）
+  ├─ 新建 temporal.py：TemporalContext 计算
+  │  ├─ get_temporal_context(conversation_id) → TemporalContext
+  │  ├─ _classify_session_gap(minutes) → SessionGapTier
+  │  ├─ _classify_time_zone(hour) → TimeOfDayZone
+  │  └─ _compute_relationship_tenure(conversation_id) → days_known
+  ├─ cognitive.py 集成：Phase 2 后计算 temporal_context
+  ├─ personality.py 传参：build_system_prompt 新增 temporal_context
+  ├─ system_zh.txt.j2 注入：时间感知区块
+  └─ system_en.txt.j2 注入：英文版
+
+Phase 2 — 记忆时间维度补全
+  ├─ memory.py build_context()：
+  │  ├─ episodic 补上 created_at_relative 计算
+  │  ├─ emotion 补上 created_at_relative 计算
+  │  └─ 召回评分加 recency bonus（近7天 +0.05）
+  ├─ system_zh.txt.j2：
+  │  ├─ facts 区块加（{{ mem.created_at_relative }}）
+  │  ├─ episodic 区块加（{{ mem.created_at_relative }}）
+  │  └─ 优化时间显示格式（fact 用"了解到"，event 用无后缀）
+  └─ system_en.txt.j2：英文版时间锚定
+
+Phase 3 — 情绪-时间联动
+  ├─ mood.py 昼夜节律：深夜 energy baseline -0.05，凌晨 openness -0.03
+  ├─ mood.py 长对话微调：session > 30min 时 openness +0.02
+  └─ proactive.py 时段风格：深夜主动消息更简短温柔
+```
 
 ### 自我认知现状评估
 
@@ -338,23 +563,35 @@ CREATE TABLE personality_evolution (
 **实施路线**：
 
 ```
-Phase 1 — 低成本高回报（优先）
-  ├─ 情感记忆标签: memories 表已有 valence，记录提取时对话的平均心情
-  ├─ 情绪一致性召回: 当前心情 × 记忆 valence 作为检索偏置（warm × 0.15）
-  ├─ 跨会话心情保留: 不完全衰减到基线，保留上次会话峰值的 40% + 结束值的 40%
-  └─ 微妙行为编码: system prompt 用行为变化（更长回复、更多提问）替代情绪声明
+Phase 1 — 低成本高回报 ✅ 已完成
+  ├─ 情绪一致性召回: build_context() 新增 current_mood_warmth 参数，
+  │  评分加入 mood_congruence = warmth × valence × 0.15
+  ├─ 跨会话心情保留: app_settings 存 mood_session_peak/end，
+  │  get_current_mood() 衰减目标 = peak×0.4 + end×0.4 + baseline×0.2，
+  │  残留48h线性衰减到纯baseline
+  └─ 微妙行为编码: system_zh/en 模板重写，去掉显式情绪声明，
+     改为行为描述（回复长度变化、主动/被动、是否会 deflect）
 
-Phase 2 — 中等投入
-  ├─ 情感动量: 新增 velocity 维度（warmth_velocity 等），跨会话保留方向但衰减 50%/天
-  ├─ 事件评估替代关键词: 轻量 prompt 判断事件类型 → 可取性 → 期望度 → 心情偏移
-  ├─ 非对称情绪传染: energy/arousal 快速跟随用户，warmth 缓慢跟随（alpha 0.08 vs 0.15）
-  └─ 负面状态持久化: warmth < 0.25 时减慢衰减速率（hourly_decay 0.02 → 0.01）
+Phase 2 — 中等投入 ✅ 已完成
+  ├─ 非对称情绪传染: MOOD_WARMTH_ALPHA=0.10（慢）vs MOOD_ENERGY_ALPHA=0.20（快）
+  └─ 负面状态持久化: warmth < 0.25 时 decay_rate × 0.5
 
-Phase 3 — 差异化
-  ├─ 自适应基线引力: 极端情绪时增强回归基线的拉力
-  ├─ 情绪天花板/地板: 接近极值时增加阻力（边际递减）
-  └─ 情绪自反思: 语晴分析自己的情绪趋势（"我最近好像有点容易烦躁"）
+Phase 3 — 差异化 ✅ 已完成
+  ├─ 自适应基线引力: value > 0.85 或 < 0.15 时额外 baseline pull
+  ├─ 情绪天花板/地板: 接近 0/1 极值时边际递减（resistance=0.03）
+  └─ 情绪自反思: get_mood_trend_summary() 7天趋势分析（预留，未注入prompt）
 ```
+
+**涉及文件**：
+
+| 文件 | 改动 |
+|------|------|
+| `config.py` | 新增 12 个 MOOD_* 配置项 |
+| `mood.py` | 跨会话残留 + 非对称传染 + 负面持久化 + 自适应引力 + 天花板地板 + 趋势分析 |
+| `memory.py` | build_context() 新增 current_mood_warmth，评分加 mood_congruence_bonus |
+| `cognitive.py` | 传入 current_mood_warmth 到 build_context |
+| `system_zh.txt.j2` | 微妙行为编码重写（withdrawn/relaxed/softened/vulnerable） |
+| `system_en.txt.j2` | 英文版行为编码重写 |
 
 ---
 
@@ -419,4 +656,9 @@ yuqing_mood (singleton)
 app_settings (KV) — 含 self_narrative / knowledge 检索时间戳
 user_preferences (KV with confidence)
 knowledge_items (独立表，带 expires_at 时效性)
+
+时间感知（无新表，纯计算）：
+  temporal.py ← messages.created_at（间隔/时长/今日统计）
+             ← conversations.created_at（关系任期）
+             ← datetime.now()（时段/昼夜节律）
 ```

@@ -90,6 +90,7 @@ class PersonalityEngine:
         current_mood: Optional[dict] = None,
         recalled_memories: Optional[dict] = None,
         yuqing_mood: Optional[dict] = None,
+        temporal_context: Optional[object] = None,
     ) -> str:
         personality = self.get_personality()
         template_name = f"system_{language}.txt.j2"
@@ -140,6 +141,7 @@ class PersonalityEngine:
             self_memories=self_memories,
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
+            temporal_context=temporal_context,
         )
 
 

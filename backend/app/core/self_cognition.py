@@ -248,12 +248,27 @@ class SelfCognitionEngine:
 
         reflection = await self._reflect()
         if not reflection:
-            logger.debug("Reflect produced no insight, skipping Evolve")
+            logger.debug("Reflect produced no insight, skipping")
             return
 
         logger.info(f"Reflect: {reflection[:100]}")
 
         evolve_result = await self._evolve(reflection)
+
+        # Always store the reflection in the audit log, even if no evolve happened
+        if not evolve_result or not evolve_result.get("log_stored"):
+            from app.core.personality import personality_engine
+            traits = personality_engine.get_personality().get("traits", {})
+            allowed = {"warmth", "humor", "formality", "empathy", "verbosity"}
+            snapshot = {k: traits.get(k) for k in allowed}
+            await self._store_evolution_log(
+                reflection=reflection,
+                evolve_json=evolve_result.get("updates", {}) if evolve_result else {},
+                reasoning=evolve_result.get("reasoning", "") if evolve_result else "",
+                snapshot_before=snapshot,
+                snapshot_after=snapshot,
+            )
+
         if evolve_result and evolve_result.get("applied"):
             logger.info(
                 f"Evolve applied: {json.dumps(evolve_result.get('updates', {}), ensure_ascii=False)}"
@@ -348,7 +363,7 @@ class SelfCognitionEngine:
             return None
 
         if not isinstance(parsed, dict) or not parsed.get("should_update"):
-            return None
+            return {"applied": False, "reasoning": parsed.get("reasoning", "LLM returned invalid format")}
 
         updates = parsed.get("updates", {})
         reasoning = parsed.get("reasoning", "")
@@ -433,7 +448,7 @@ class SelfCognitionEngine:
             identity_hash_before=hash_before,
         )
 
-        return {"applied": True, "updates": final_updates, "reasoning": reasoning}
+        return {"applied": True, "updates": final_updates, "reasoning": reasoning, "log_stored": True}
 
     async def _store_evolution_log(
         self,

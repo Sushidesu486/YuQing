@@ -65,11 +65,45 @@ class Settings(BaseSettings):
     YUQING_MOOD_BASELINE_OPENNESS: float = 0.45
     YUQING_MOOD_BASELINE_ENERGY: float = 0.45
 
+    # Mood: cross-session retention (Phase 3.6.1)
+    MOOD_RESIDUAL_PEAK_WEIGHT: float = 0.4       # weight of session peak in residual
+    MOOD_RESIDUAL_END_WEIGHT: float = 0.4        # weight of session end in residual
+    MOOD_RESIDUAL_FADE_HOURS: float = 48.0       # residual fades to zero over this many hours
+
+    # Mood: congruent recall (Phase 3.6.1)
+    MOOD_CONGRUENT_RECALL_WEIGHT: float = 0.15   # current_warmth × mem_valence bonus
+
+    # Mood: asymmetric contagion (Phase 3.6.2)
+    MOOD_WARMTH_ALPHA: float = 0.10              # warmth follows user slowly
+    MOOD_ENERGY_ALPHA: float = 0.20              # energy follows user quickly
+
+    # Mood: negative persistence (Phase 3.6.2)
+    MOOD_NEGATIVE_DECAY_FACTOR: float = 0.5      # half normal decay when warmth < 0.25
+
+    # Mood: momentum (Phase 3.6.2)
+    MOOD_VELOCITY_RETENTION: float = 0.5         # velocity retained across sessions (per day)
+    MOOD_VELOCITY_INERTIA: float = 0.8           # mu: momentum inertia in EMA
+
+    # Mood: adaptive baseline (Phase 3.6.3)
+    MOOD_EXTREME_PULL_STRENGTH: float = 0.06     # extra baseline pull when emotion is extreme
+    MOOD_EXTREME_THRESHOLD: float = 0.85         # values beyond this get extra pull
+
+    # Mood: ceiling/floor (Phase 3.6.3)
+    MOOD_CEILING_FLOOR_RESISTANCE: float = 0.03  # resistance near 0 and 1 extremes
+
     # Reflect-Evolve (personality evolution)
     EVOLVE_ENABLED: bool = True
     EVOLVE_REFLECT_INTERVAL: int = 40           # trigger Reflect every N messages
     EVOLVE_MAX_DELTA: float = 0.05              # max single trait change per evolve
     EVOLVE_MAX_DRIFT: float = 0.15              # max cumulative drift from YAML baseline
+
+    # Temporal awareness
+    TEMPORAL_ENABLED: bool = True
+    TEMPORAL_CONTINUATION_MINUTES: int = 10     # < this = "just stepped away"
+    TEMPORAL_SHORT_BREAK_MINUTES: int = 120     # < this = "short break"
+    TEMPORAL_LATE_NIGHT_START: int = 0          # late night range start
+    TEMPORAL_LATE_NIGHT_END: int = 5            # late night range end
+    TEMPORAL_ENERGY_NIGHT_PENALTY: float = 0.05 # energy drop during late night
 
     # Embedding model (local BGE for semantic search)
     EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
