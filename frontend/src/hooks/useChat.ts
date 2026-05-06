@@ -152,7 +152,7 @@ export function useChat() {
           if (data.type === 'token' && data.content) {
             fullContent += data.content;
             // Strip /sticker_name refs from displayed content
-            const displayContent = fullContent.replace(/\/\w+/g, '').replace(/\n{3,}/g, '\n\n').trim();
+            const displayContent = fullContent.replace(/\/[\w]+\/[\w]+/g, '').replace(/\n{3,}/g, '\n\n').trim();
             // Update placeholder with streaming content for real-time display
             setMessages((prev) => {
               const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
@@ -229,7 +229,7 @@ export function useChat() {
       setError(null);
 
       // Check if user is sending a sticker
-      const stickerMatch = content.trim().match(/^\/(\w+)$/);
+      const stickerMatch = content.trim().match(/^\/([\w]+\/[\w]+)$/);
       if (stickerMatch) {
         const stickerName = stickerMatch[1];
         // Send sticker directly via API

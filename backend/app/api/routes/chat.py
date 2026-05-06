@@ -32,9 +32,9 @@ async def chat_send(request: Request):
                     "INSERT INTO conversations (id) VALUES (%s)", (conversation_id,)
                 )
 
-    # Check if user is sending a sticker (format: /sticker_name)
+    # Check if user is sending a sticker (format: /category/name)
     import re
-    sticker_match = re.fullmatch(r'/(\w+)', message)
+    sticker_match = re.fullmatch(r'/([\w]+/[\w]+)', message)
     if sticker_match:
         from app.core.personality import AVAILABLE_STICKERS
         sticker_name = sticker_match.group(1)

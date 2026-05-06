@@ -15,24 +15,24 @@ logger = logging.getLogger(__name__)
 _PERSONALITY_DIR = Path(__file__).resolve().parent.parent.parent / "personality"
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
-# Available stickers for YuQing to use (must match files in frontend/public/stickers/)
+# Available stickers for YuQing to use (path relative to frontend/public/stickers/)
 AVAILABLE_STICKERS = [
     # happy
-    "peekaboo", "smile_blink", "clap", "celebrate",
+    "happy/peekaboo", "happy/smile_blink", "happy/clap", "happy/celebrate",
     # sad/comfort
-    "pat_pat", "hug", "tissue",
+    "sad/pat_pat", "sad/hug", "sad/tissue",
     # teasing/tsundere
-    "pout", "whatever",
+    "teasing/pout", "teasing/whatever",
     # shy
-    "fidding_with_hair",
+    "shy/fidding_with_hair",
     # angry
-    "glare", "ignore",
+    "angry/glare", "angry/ignore",
     # love
-    "heart_eyes",
+    "love/heart_eyes",
     # tired
-    "yawn", "sleepy",
+    "tired/yawn", "tired/sleepy",
     # eating
-    "eating_chips",
+    "eating/eating_chips",
 ]
 
 

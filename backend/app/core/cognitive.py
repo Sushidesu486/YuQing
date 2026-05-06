@@ -199,8 +199,8 @@ class CognitiveProcessor:
         sticker_names = []
         clean_response = full_response
         if valid_stickers:
-            # Extract /sticker_name tokens
-            found = re.findall(r'/(\w+)', full_response)
+            # Extract /category/name sticker tokens
+            found = re.findall(r'/([\w]+/[\w]+)', full_response)
             for name in found:
                 if name in valid_stickers and name not in sticker_names:
                     sticker_names.append(name)
