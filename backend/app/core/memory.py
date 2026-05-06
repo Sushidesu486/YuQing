@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 
 MEMORY_CLASSIFY_PROMPT_ZH = """分析以下对话，提取信息并检测记忆矛盾。
 
-第一类：关于用户的重要信息
+第一类：关于{user_name}的重要信息
 类型说明：
-- fact: 用户的事实信息（姓名、身份、职业、位置等）
-- preference: 用户明确表达的喜好、厌恶、习惯偏好
+- fact: {user_name}的事实信息（姓名、身份、职业、位置等）
+- preference: {user_name}明确表达的喜好、厌恶、习惯偏好
 - event: 发生的具体事件（有时间节点）
 - episodic: 带有强烈情绪色彩的经历或场景
 - emotion: 持续的情感反应模式（反复出现的情绪触发）
-- procedural: 行为互动模式（用户习惯的聊天方式、时间习惯等）
+- procedural: 行为互动模式（{user_name}习惯的聊天方式、时间习惯等）
 
 第二类：语晴在回复中关于自己的表达
 类型说明：
@@ -37,7 +37,7 @@ self提取规则：
 - 确保内容是完整的句子片段，不是碎片化的词组
 
 第三类：记忆纠正
-以下是语晴之前记住的关于用户的信息：
+以下是语晴之前记住的关于{user_name}的信息：
 {recalled_memories}
 
 对比当前对话内容，检查是否有矛盾：
@@ -67,11 +67,11 @@ self提取规则：
 
 MEMORY_EXTRACT_PROMPT_EN = """Analyze the following conversation, extract information, and detect memory contradictions.
 
-Category 1: Important information about the user
+Category 1: Important information about {user_name}
 - Factual information (name, preferences, occupation, etc.)
 - Expressed preferences and hobbies
 - Important emotional or life events
-- User's values and beliefs
+- {user_name}'s values and beliefs
 
 Category 2: Things YuQing expressed about herself
 - self_interest: Hobbies and interests
@@ -84,7 +84,7 @@ self extraction rules:
 - Ensure content is a complete sentence fragment, not a fragmented phrase
 
 Category 3: Memory corrections
-Below are things YuQing previously remembered about the user:
+Below are things YuQing previously remembered about {user_name}:
 {recalled_memories}
 
 Compare with the current conversation for contradictions:
@@ -113,7 +113,7 @@ If a category has nothing worth remembering, return an empty array [].
 If no contradictions, corrections should be an empty array [].
 Return only JSON, no other text."""
 
-CONSOLIDATE_PROMPT_ZH = """以下是关于同一个用户的若干条记忆，其中一些可能是重复或相似的。请合并和精简这些记忆：
+CONSOLIDATE_PROMPT_ZH = """以下是关于同一个人的若干条记忆，其中一些可能是重复或相似的。请合并和精简这些记忆：
 - 合并重复或高度相似的记忆
 - 保留所有独特的细节
 - 用更精炼的方式表达
@@ -893,6 +893,7 @@ class MemoryManager:
         return await self._extract_via_llm(
             conversation_id, user_message, assistant_response, language,
             recalled_facts=recalled_facts,
+            user_name=settings.USER_NAME,
         )
 
     async def _extract_via_llm(
@@ -902,15 +903,17 @@ class MemoryManager:
         assistant_response: str,
         language: str = "zh",
         recalled_facts: Optional[list] = None,
+        user_name: str = "shouss",
     ) -> list:
         """Use LLM to extract user memories, self-memories, and detect contradictions in one call."""
         from app.core.llm import generate_completion
 
-        conversation_text = f"用户: {user_message}\n语晴: {assistant_response}"
+        conversation_text = f"{user_name}: {user_message}\n语晴: {assistant_response}"
         prompt_template = (
             MEMORY_CLASSIFY_PROMPT_ZH if language == "zh" else MEMORY_EXTRACT_PROMPT_EN
         )
         prompt = prompt_template.replace("{conversation}", conversation_text)
+        prompt = prompt.replace("{user_name}", user_name)
 
         # Inject recalled memories for contradiction detection
         if recalled_facts:

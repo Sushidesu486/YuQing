@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     # Application
     LANGUAGE: str = "zh"
+    USER_NAME: str = "shouss"
     MAX_CONTEXT_MESSAGES: int = 20
     MEMORY_RECALL_COUNT: int = 5
     AUTO_MEMORY_EXTRACTION: bool = True
