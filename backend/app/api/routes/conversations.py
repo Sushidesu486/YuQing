@@ -52,7 +52,7 @@ async def get_conversation(conversation_id: str):
                 return JSONResponse({"error": "conversation not found"}, status_code=404)
 
             await cur.execute(
-                "SELECT id, role, content, valence, arousal, model_used, created_at "
+                "SELECT id, role, content, content_type, valence, arousal, model_used, created_at "
                 "FROM messages WHERE conversation_id = %s ORDER BY created_at",
                 (conversation_id,),
             )
