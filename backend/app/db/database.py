@@ -307,6 +307,19 @@ async def init_db():
             except Exception as e:
                 logger.warning(f"self_memories migration skipped: {e}")
 
+            # Migration: add content_type to messages table
+            try:
+                await cur.execute("DESCRIBE messages")
+                msg_columns = {row[0] for row in await cur.fetchall()}
+                if "content_type" not in msg_columns:
+                    await cur.execute(
+                        "ALTER TABLE messages ADD COLUMN "
+                        "content_type VARCHAR(16) NOT NULL DEFAULT 'text' AFTER role"
+                    )
+                    logger.info("Migration: added column messages.content_type")
+            except Exception as e:
+                logger.warning(f"content_type migration skipped: {e}")
+
     logger.info("Database tables initialized")
 
 

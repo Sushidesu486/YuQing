@@ -14,6 +14,31 @@ interface Props {
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user';
 
+  // Render sticker message
+  if (message.content_type === 'sticker' && message.sticker_name) {
+    return (
+      <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3 px-4`}>
+        <div className="flex items-end gap-2">
+          {!isUser && (
+            <img src={YUQING_AVATAR} alt="语晴" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
+          )}
+          <img
+            src={`/stickers/${message.sticker_name}.png`}
+            alt={message.sticker_name}
+            className="w-28 h-28 rounded-lg object-contain bg-gray-50/50"
+            draggable={false}
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
+          />
+          {isUser && (
+            <img src={USER_AVATAR} alt="shouss" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Don't render empty assistant messages (placeholder during streaming)
   if (!isUser && !message.content) return null;
 

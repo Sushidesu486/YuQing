@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import AsyncGenerator, Optional
 
 import aiomysql
@@ -160,13 +161,16 @@ class CognitiveProcessor:
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT role, content FROM messages "
+                    "SELECT role, content, content_type FROM messages "
                     "WHERE conversation_id = %s ORDER BY created_at DESC LIMIT %s",
                     (conversation_id, settings.MAX_CONTEXT_MESSAGES),
                 )
                 rows = await cur.fetchall()
         for row in reversed(rows):
-            messages.append({"role": row["role"], "content": row["content"]})
+            if row.get("content_type") == "sticker":
+                messages.append({"role": row["role"], "content": f"[发送了 /{row['content']} 表情包]"})
+            else:
+                messages.append({"role": row["role"], "content": row["content"]})
 
         # --- Phase 7: Stream LLM response ---
         assistant_msg_id = secrets.token_hex(16)
@@ -184,12 +188,37 @@ class CognitiveProcessor:
         logger.info(f"LLM response ({len(full_response)} chars): {full_response[:200]}...")
 
         # --- Phase 8: Store assistant message ---
+        # Parse stickers from response before storing
+        valid_stickers = set()
+        try:
+            from app.core.personality import AVAILABLE_STICKERS
+            valid_stickers = set(AVAILABLE_STICKERS)
+        except Exception:
+            pass
+
+        sticker_names = []
+        clean_response = full_response
+        if valid_stickers:
+            # Extract /sticker_name tokens
+            found = re.findall(r'/(\w+)', full_response)
+            for name in found:
+                if name in valid_stickers and name not in sticker_names:
+                    sticker_names.append(name)
+            # Remove sticker references from stored text
+            if sticker_names:
+                for name in sticker_names:
+                    clean_response = clean_response.replace(f"/{name}", "").strip()
+                # Clean up extra whitespace
+                clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
+
+        # Store the text message (cleaned, without sticker refs)
+        display_response = clean_response if clean_response else full_response
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content, model_used) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (assistant_msg_id, conversation_id, "assistant", full_response, settings.LITELLM_MODEL),
+                    "INSERT INTO messages (id, conversation_id, role, content, content_type, model_used) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (assistant_msg_id, conversation_id, "assistant", display_response, "text", settings.LITELLM_MODEL),
                 )
                 # Auto-title
                 await cur.execute(
@@ -204,6 +233,17 @@ class CognitiveProcessor:
                         (title, conversation_id),
                     )
 
+        # Store sticker messages as separate rows
+        for sticker_name in sticker_names:
+            sticker_msg_id = secrets.token_hex(16)
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO messages (id, conversation_id, role, content, content_type) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (sticker_msg_id, conversation_id, "assistant", sticker_name, "sticker"),
+                    )
+
         # --- Done (yield immediately after storing, before background tasks) ---
         yield {
             "event": "done",
@@ -212,6 +252,16 @@ class CognitiveProcessor:
                 ensure_ascii=True,
             ),
         }
+
+        # --- Sticker events (after done) ---
+        for sticker_name in sticker_names:
+            yield {
+                "event": "sticker",
+                "data": json.dumps(
+                    {"type": "sticker", "name": sticker_name, "conversation_id": conversation_id},
+                    ensure_ascii=True,
+                ),
+            }
 
         # --- Phase 9: Background tasks (fire-and-forget, runs after done is sent) ---
 

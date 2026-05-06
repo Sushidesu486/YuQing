@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 _PERSONALITY_DIR = Path(__file__).resolve().parent.parent.parent / "personality"
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
+# Available stickers for YuQing to use
+AVAILABLE_STICKERS = [
+    # happy
+    "peekaboo", "smile_blink", "clap", "celebrate",
+    # sad/comfort
+    "pat_pat", "hug", "tissue",
+    # teasing/tsundere
+    "side_eye", "pout", "whatever", "smirk",
+    # shy
+    "blush", "hide",
+    # angry
+    "glare", "ignore",
+    # surprised
+    "shock", "wide_eyes",
+    # love
+    "heart_eyes",
+    # tired
+    "yawn", "sleepy",
+    # eating
+    "hungry",
+]
+
 
 class PersonalityEngine:
     def __init__(self):
@@ -142,6 +164,7 @@ class PersonalityEngine:
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
             temporal_context=temporal_context,
+            stickers=AVAILABLE_STICKERS,
         )
 
 

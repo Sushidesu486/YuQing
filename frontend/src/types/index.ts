@@ -2,6 +2,8 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  content_type?: 'text' | 'sticker';
+  sticker_name?: string;
   valence?: number | null;
   arousal?: number | null;
   model_used?: string;

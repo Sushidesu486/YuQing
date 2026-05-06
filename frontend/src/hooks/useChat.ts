@@ -151,12 +151,14 @@ export function useChat() {
 
           if (data.type === 'token' && data.content) {
             fullContent += data.content;
+            // Strip /sticker_name refs from displayed content
+            const displayContent = fullContent.replace(/\/\w+/g, '').replace(/\n{3,}/g, '\n\n').trim();
             // Update placeholder with streaming content for real-time display
             setMessages((prev) => {
               const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);
               if (idx === -1) return prev;
               const updated = [...prev];
-              updated[idx] = { ...updated[idx], content: fullContent };
+              updated[idx] = { ...updated[idx], content: displayContent || fullContent };
               return updated;
             });
           } else if (data.type === 'error') {
@@ -170,7 +172,14 @@ export function useChat() {
               conversationIdRef.current = data.conversation_id;
               localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
             }
-            // Exit read loop immediately — server may not close the SSE connection
+            // Don't break yet — sticker events may follow
+          } else if (data.type === 'sticker') {
+            setMessages((prev) => [
+              ...prev,
+              { id: data.message_id || `sticker-${Date.now()}`, role: 'assistant', content: data.name,
+                content_type: 'sticker', sticker_name: data.name, created_at: new Date().toISOString() },
+            ]);
+            // After receiving sticker(s), we can close the stream
             streamFinished = true;
             break;
           }
@@ -218,6 +227,55 @@ export function useChat() {
       if (!content.trim()) return;
 
       setError(null);
+
+      // Check if user is sending a sticker
+      const stickerMatch = content.trim().match(/^\/(\w+)$/);
+      if (stickerMatch) {
+        const stickerName = stickerMatch[1];
+        // Send sticker directly via API
+        const convId = conversationIdRef.current;
+        const lang = localStorage.getItem('language') || 'zh';
+        fetch('/api/chat/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: convId, message: content.trim(), language: lang }),
+        }).then(async (res) => {
+          if (!res.ok) return;
+          const reader = res.body?.getReader();
+          if (!reader) return;
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const data = JSON.parse(line.slice(6).trim());
+                if (data.type === 'sticker') {
+                  setMessages((prev) => [
+                    ...prev,
+                    { id: data.message_id || `sticker-${Date.now()}`, role: 'user', content: data.name,
+                      content_type: 'sticker', sticker_name: data.name },
+                  ]);
+                  // If this was a user sticker, also trigger YuQing's response
+                  // by sending a descriptive text message
+                  if (data.sender === 'user') {
+                    pendingRef.current.push(`[发送了 /${data.name} 表情包]`);
+                    setTimeout(() => {
+                      if (!sendingRef.current) flushMessages();
+                    }, 300);
+                  }
+                }
+              } catch { /* skip */ }
+            }
+          }
+        }).catch(console.error);
+        return;
+      }
 
       // Add user message to UI immediately
       setMessages((prev) => [
