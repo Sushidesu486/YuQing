@@ -199,15 +199,26 @@ class CognitiveProcessor:
         sticker_names = []
         clean_response = full_response
         if valid_stickers:
-            # Extract /category/name sticker tokens
-            found = re.findall(r'/([\w]+/[\w]+)', full_response)
-            for name in found:
-                if name in valid_stickers and name not in sticker_names:
+            # Extract /category/name and /name (fallback) sticker tokens
+            found = re.findall(r'/([\w]+(?:/[\w]+)?)', full_response)
+            for token in found:
+                if token in valid_stickers:
+                    name = token  # already has category prefix
+                else:
+                    # Fallback: try to find matching sticker by name
+                    parts = token.split('/')
+                    basename = parts[-1] if len(parts) > 1 else parts[0]
+                    matches = [s for s in valid_stickers if s.endswith(f"/{basename}")]
+                    name = matches[0] if matches else None
+                if name and name not in sticker_names:
                     sticker_names.append(name)
             # Remove sticker references from stored text
             if sticker_names:
+                # Build all possible patterns to remove (with and without category prefix)
                 for name in sticker_names:
-                    clean_response = clean_response.replace(f"/{name}", "").strip()
+                    basename = name.split('/')[-1]
+                    clean_response = clean_response.replace(f"/{name}", "")
+                    clean_response = clean_response.replace(f"/{basename}", "")
                 # Clean up extra whitespace
                 clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
 
