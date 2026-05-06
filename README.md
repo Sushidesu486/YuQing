@@ -44,6 +44,8 @@
 │  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成              │
 │             用户消息按行拆分存储，合并文本用于记忆提取          │
+│  Phase 7.5: 表情包选择（BGE 语义匹配，后处理）               │
+│  Phase 8:  存储回复 + 表情包（独立 message row）              │
 │  Phase 9:  记忆提取 / 纠正 / 衰减 / 巩固 / 自我叙事 / 偏好   │
 │                                                              │
 │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
@@ -88,7 +90,7 @@
 
 ---
 
-## 九大核心能力
+## 核心能力
 
 ### 1. 记忆系统
 
@@ -306,7 +308,25 @@
 - **Identity Hash**：首次启动用 5 个身份探针问题计算基线 SHA256，定期对比检测漂移
 - **设计原则**：YAML 静态骨架提供稳定性，Evolve 提供适应性增长，审计日志保证可追溯
 
-### 9. 信息检索系统（InfoRetrievalEngine）
+### 9. 表情包系统
+
+语晴能在对话中发送表情包图片，通过 BGE 语义匹配自动选择，无需 LLM 参与：
+
+**架构**：Phase 7.5 后处理管道
+```
+LLM 回复完成 → BGE encode 回复文本 + 所有 sticker 描述
+             → cosine similarity 选择最佳匹配
+             → similarity > 0.35 时自动附加
+```
+
+- **不占用 LLM token**：sticker 选择完全在 Python 后处理中完成，system prompt 中不包含任何 sticker 信息
+- **定义在代码中**：`personality.py` 的 `STICKER_DEFINITIONS`，每张 sticker 有 `path`（路径）和 `desc`（中文语义描述）
+- **双方都能发**：用户通过表情包选择器发送 `/category/name` 格式，前端渲染为 PNG 图片
+- **存储**：sticker 作为独立 message row（`content_type='sticker'`），历史消息中也能渲染
+- **16 张 sticker**：happy(4) / sad(3) / teasing(2) / shy(1) / angry(2) / love(1) / tired(2) / eating(1)
+- 详见 [docs/sticker-system.md](docs/sticker-system.md)
+
+### 10. 信息检索系统（InfoRetrievalEngine）
 
 语晴能主动了解外部世界，不只是依赖对话学习：
 
@@ -364,6 +384,7 @@ npm run dev
 | 特性 | 说明 |
 |------|------|
 | 微信风格聊天 | 绿色气泡（用户）/ 白色气泡（语晴），支持多气泡拆分 |
+| 表情包收发 | BGE 语义匹配自动选择 sticker，用户通过输入栏选择器手动发送（16 张，8 类） |
 | 消息搜索 | 右上角搜索入口，关键词/日期搜索，点击定位到消息位置 |
 | 实时流式显示 | LLM 回复逐字显示，无需等待完成 |
 | 消息批量发送 | 20 秒冷却窗口内多条消息自动合并发送 |
@@ -436,6 +457,7 @@ yuqing/
 │   └── src/
 │       ├── components/
 │       │   ├── Chat/                 # 微信风格聊天组件
+│       │   ├── Memory/               # 记忆调试面板
 │       │   │   ├── ChatView.tsx       # 聊天主视图
 │       │   │   ├── MessageList.tsx    # 消息列表（滚动定位 + 高亮）
 │       │   │   ├── MessageBubble.tsx  # 消息气泡（多气泡拆分）
@@ -450,8 +472,14 @@ yuqing/
 │       ├── types/index.ts            # TypeScript 类型定义
 │       └── i18n/                     # 中英文翻译
 ├── data/                            # 运行时数据
+├── frontend/public/stickers/        # 表情包 PNG（按类别分目录）
 └── docs/
-    └── memory-report.md              # 记忆系统技术报告
+    ├── memory-graph.md              # 记忆关联网络（激活传播）
+    ├── memory-debug-panel.md        # 记忆调试面板
+    ├── sticker-system.md            # 表情包系统（BGE 语义匹配）
+    ├── sleep-cleanup.md             # 睡眠清理（5 阶段神经科学启发）
+    ├── tavily-info-retrieval.md     # Tavily 信息检索（主动 + 被动）
+    └── bge-notes.md                 # BGE 嵌入模型使用笔记
 ```
 
 ### 数据库表
@@ -459,7 +487,7 @@ yuqing/
 | 表 | 说明 |
 |----|------|
 | `conversations` | 对话列表 |
-| `messages` | 消息记录（含情绪标注） |
+| `messages` | 消息记录（含情绪标注、content_type 区分文本/表情包） |
 | `memories` | 长期记忆（用户 7 种类型 + 自我 4 种类型，统一存储，情绪 metadata + 衰减/巩固标记） |
 | `emotion_snapshots` | 用户情绪快照 |
 | `yuqing_mood_log` | 语晴心情变化日志 |

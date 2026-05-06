@@ -1,7 +1,7 @@
 # YuQing 数据库技术文档
 
 > 数据库: MySQL 9 | 字符集: utf8mb4 | 引擎: InnoDB
-> 最后更新: 2026-05-04
+> 最后更新: 2026-05-06
 
 ---
 
@@ -65,7 +65,8 @@ CREATE TABLE conversations (
 | `id` | CHAR(32) | PK | 32 位十六进制 |
 | `conversation_id` | CHAR(32) | FK → conversations, ON DELETE CASCADE | 所属对话 |
 | `role` | ENUM('user','assistant','system') | NOT NULL | 消息角色 |
-| `content` | TEXT | NOT NULL | 消息内容 |
+| `content` | TEXT | NOT NULL | 消息内容（text 类型为正文，sticker 类型为 sticker path） |
+| `content_type` | VARCHAR(16) | NOT NULL, DEFAULT 'text' | 内容类型：`text`（默认）或 `sticker`（表情包） |
 | `valence` | FLOAT | NULL | 用户消息情绪极性 (-1.0 ~ +1.0) |
 | `arousal` | FLOAT | NULL | 用户消息唤醒度 (0.0 ~ 1.0) |
 | `prompt_tokens` | INT | DEFAULT 0 | prompt 消耗 token 数 |
@@ -83,6 +84,7 @@ CREATE TABLE messages (
     conversation_id CHAR(32) NOT NULL,
     role ENUM('user', 'assistant', 'system') NOT NULL,
     content TEXT NOT NULL,
+    content_type VARCHAR(16) NOT NULL DEFAULT 'text',  -- 'text' | 'sticker'
     valence FLOAT DEFAULT NULL,
     arousal FLOAT DEFAULT NULL,
     prompt_tokens INT DEFAULT 0,

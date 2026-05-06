@@ -1,6 +1,6 @@
 # YuQing 记忆系统技术报告
 
-> 最后更新: 2026-05-02
+> 最后更新: 2026-05-06
 > 适用于: YuQing v3 (分层注入 + 多类型记忆 + 隐性影响)
 
 ---
@@ -25,7 +25,8 @@ YuQing 的认知系统由 6 个子系统组成，共同实现"有记忆、有情
 │  Phase 5  存储用户消息到 MySQL                            │
 │  Phase 6  加载上下文消息                                  │
 │  Phase 7  LLM 流式生成                                   │
-│  Phase 8  存储助手回复 + 自动标题                          │
+│  Phase 7.5 表情包选择（BGE 语义匹配，后处理）              │
+│  Phase 8  存储助手回复 + 表情包 + 自动标题                 │
 │  Phase 9  后台任务:                                       │
 │          - 记忆衰减 (decay)                               │
 │          - 记忆合并 (consolidation)                       │
@@ -47,7 +48,7 @@ YuQing 的认知系统由 6 个子系统组成，共同实现"有记忆、有情
 | 层 | 技术 | 用途 |
 |----|------|------|
 | **短期记忆** | MySQL `messages` 表 | 最近 N 条对话（默认 20 条） |
-| **长期记忆（向量）** | mem0 + ChromaDB | 语义检索、混合搜索（infer=False 纯向量存储） |
+| **长期记忆（向量）** | BGE-base-zh-v1.5 本地嵌入 | 语义检索、记忆去重、聚类合并、sticker 匹配 |
 | **长期记忆（结构化）** | MySQL `memories` 表 | 7 种记忆类型、元数据、衰减计算、CRUD |
 | **自我记忆** | MySQL `self_memories` 表 | 语晴自身的兴趣/经历认知 |
 | **情绪快照** | MySQL `emotion_snapshots` | 情绪跟踪、主动消息触发 |
@@ -146,7 +147,7 @@ os.environ["OPENAI_API_BASE"] = settings.LITELLM_API_BASE
 
 **关键决策:**
 - **LLM**: 复用现有 LiteLLM 配置，`infer=False` 避免 function calling 依赖
-- **Embedder**: 本地 HuggingFace 模型 BAAI/bge-small-zh-v1.5（512维），缓存于 `~/.cache/huggingface/`
+- **Embedder**: 本地 HuggingFace 模型 BAAI/bge-base-zh-v1.5（768维），缓存于 `~/.cache/huggingface/`
 - **Vector Store**: ChromaDB PersistentClient，数据持久化在磁盘
 - **提取**: 所有 `mem0.add()` 调用均带 `infer=False`，记忆分类由自有 LLM prompt 完成
 
@@ -534,7 +535,7 @@ CREATE TABLE IF NOT EXISTS self_memories (
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `MEM0_ENABLED` | true | 是否启用 mem0（关闭则回退到 LLM 提取） |
-| `MEM0_EMBEDDING_MODEL` | BAAI/bge-small-zh-v1.5 | 本地中文嵌入模型（512维） |
+| `MEM0_EMBEDDING_MODEL` | BAAI/bge-base-zh-v1.5 | 本地中文嵌入模型（768维） |
 | `MEMORY_RECALL_COUNT` | 5 | 每次对话召回的记忆条数 |
 | `AUTO_MEMORY_EXTRACTION` | true | 是否自动提取记忆 |
 | `MEMORY_DECAY_ENABLED` | true | 是否启用衰减 |
@@ -608,7 +609,8 @@ CREATE TABLE IF NOT EXISTS self_memories (
 
 ### 未来可探索的方向
 
-- **forgetting 曲线**: 用更科学的遗忘曲线替代简单指数衰减
+- **forgetting 曲线**: 用 ZenBrain 的三时间尺度衰减函数替代简单指数衰减（睡眠清理 Phase 2 已部分实现 TAG 评分）
+- **睡眠清理效果监控**: 添加清理前后的记忆质量指标（平均重要性、去重率、合并率）
 - **跨对话推理**: 利用记忆进行跨越多个独立对话的推理
 - **人格微调**: 基于积累的记忆和用户互动模式，动态微调人格参数
 - **关系演进模型**: 随对话积累自然推进关系深度

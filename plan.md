@@ -1,6 +1,6 @@
 # YuQing 语晴 — 开发计划
 
-> 最后更新：2026-05-05
+> 最后更新：2026-05-06
 
 ---
 
@@ -161,6 +161,37 @@
 - [ ] `yuqing_mood_log`：无清理机制，数据无限增长
 - [ ] `knowledge_items`：无清理机制，过期数据不会自动删除（查询时已通过 expires_at 过滤）
 - [ ] `memories`：`source_message_id` 仍未填充（extract 时未传 message_id，仅填充了 source_conversation_id）
+
+---
+
+## 待办
+
+### Tavily 信息检索优化
+
+**问题分析（2026-05-06）**
+
+1. **搜索 query 太泛**：从 YAML interests 提取 topic 后只拼接"最新资讯"，如"ACG 文化 最新资讯"、"历史和神话 最新资讯"，返回的是大路货新闻，不符合语晴人设。语晴的兴趣描述中有具体方向（"老玩家品味洁癖"、"高性能计算"、"后朋克和摇滚"），完全没利用。
+
+2. **总结 prompt 返回"感想"而非"事实"**：当前 prompt 要求"以语晴的第一人称视角，像是她看到了这些信息后的感想"。实际存入 knowledge_items 的全是"我觉得…真不错"、"这脑洞也太大了"之类的感叹，没有任何实际信息量。7 天内可引用，但对对话毫无价值——语晴不可能只说一句"最近有个事挺有意思"但不提是什么事。
+
+3. **LLM 总结时无人格上下文**：`generate_completion(messages=[{"role": "user", "content": prompt}])` 没有传 system prompt，导致：
+   - 总结语气不像语晴（"真是让人又期待又着急呀"这种不像她会说的话）
+   - 没有利用语晴的性格特质（吐槽、调侃、毒舌风格）来过滤/评价信息
+
+4. **Tavily 高风险结果被直接存入**："各种诡辩论和思维实验"和"历史和神话"的搜索被 Tavily 标记为 high risk，但存入的是 "The request was rejected because it was considered high risk" 这段错误文本。
+
+5. **被动检索 query 不够具体**：LLM 判断需要搜索后返回的 query（如"今日有趣新闻事件"）太模糊，搜索结果质量差。
+
+6. **被动检索总结也无人设约束**：同样只有 `[{"role": "user", "content": prompt}]`，语气不统一。
+
+**改进方向**：
+
+- [ ] 从 YAML interests 中提取具体关键词构造精准搜索 query（如 "新番 2026年4月"、"后朋克 新专辑" 而非 "ACG 文化 最新资讯"）
+- [ ] 总结 prompt 改为"提取 2-3 条具体事实"（具体事件/数据/发布信息），不要感想
+- [ ] 总结时传入精简人格 system prompt（姓名 + 语气 + 说话习惯），让语气回归人设
+- [ ] Tavily 返回空结果或高风险内容时直接跳过，不存入数据库
+- [ ] 被动检索：对 LLM 生成的搜索关键词增加质量判断（太泛则不搜索）
+- [ ] 被动检索总结也加入人格约束
 
 ### 时间感知系统（Temporal Awareness）✅ 已完成
 - [x] 新建 `temporal.py`：TemporalContext dataclass，SessionGapTier（6 档），TimeOfDayZone（6 档），关系任期、会话时长、今日统计

@@ -15,25 +15,29 @@ logger = logging.getLogger(__name__)
 _PERSONALITY_DIR = Path(__file__).resolve().parent.parent.parent / "personality"
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
-# Available stickers for YuQing to use (path relative to frontend/public/stickers/)
-AVAILABLE_STICKERS = [
-    # happy
-    "happy/peekaboo", "happy/smile_blink", "happy/clap", "happy/celebrate",
-    # sad/comfort
-    "sad/pat_pat", "sad/hug", "sad/tissue",
-    # teasing/tsundere
-    "teasing/pout", "teasing/whatever",
-    # shy
-    "shy/fidding_with_hair",
-    # angry
-    "angry/glare", "angry/ignore",
-    # love
-    "love/heart_eyes",
-    # tired
-    "tired/yawn", "tired/sleepy",
-    # eating
-    "eating/eating_chips",
+# Sticker definitions with descriptions for BGE semantic matching
+# Each sticker has: path (relative to frontend/public/stickers/), description for matching
+STICKER_DEFINITIONS = [
+    {"path": "happy/peekaboo", "desc": "探出半个头偷偷看，好奇期待对方反应，适合轻松愉快的对话氛围"},
+    {"path": "happy/smile_blink", "desc": "笑着眨眼，温暖俏皮，适合对方说了有趣的话或者气氛轻松时"},
+    {"path": "happy/clap", "desc": "鼓掌，表示赞赏和祝贺，对方取得了成就或说了精彩的话"},
+    {"path": "happy/celebrate", "desc": "庆祝撒花，非常开心激动的时刻，对方分享了好消息"},
+    {"path": "sad/pat_pat", "desc": "YuQing微笑着摸摸对方的头，亲拍，表示安慰或者亲呢"},
+    {"path": "sad/hug", "desc": "给一个拥抱，对方情绪低落、感到孤独或需要温暖时"},
+    {"path": "sad/tissue", "desc": "感到心情有点低落，用纸巾擦自己的眼泪"},
+    {"path": "teasing/pout", "desc": "嘟嘴不高兴，被调侃或被开玩笑时傲娇地表达不满"},
+    {"path": "teasing/whatever", "desc": "无所谓耸肩摊手，对方说的事情自己不在意或者觉得好笑"},
+    {"path": "shy/fidding_with_hair", "desc": "害羞地玩头发，被夸奖、害羞或者被关注到时会紧张地摆弄头发"},
+    {"path": "angry/glare", "desc": "怒视瞪眼，真的生气或不耐烦的时候盯着对方"},
+    {"path": "angry/ignore", "desc": "别过脸不理人，生气但不想说话，用沉默表达不满"},
+    {"path": "love/heart_eyes", "desc": "花痴眼冒心心，看到喜欢的东西或对方做了让自己心动的事"},
+    {"path": "tired/yawn", "desc": "打哈欠，犯困了或对话有点无聊的时候自然地打个哈欠"},
+    {"path": "tired/sleepy", "desc": "半睁眼睛，似睡非睡的样子"},
+    {"path": "eating/eating_chips", "desc": "吃零食薯片，闲聊吃零食的轻松氛围，或者对方提到了吃的"},
 ]
+
+# Derived list for backward compatibility
+AVAILABLE_STICKERS = [s["path"] for s in STICKER_DEFINITIONS]
 
 
 class PersonalityEngine:
@@ -162,7 +166,6 @@ class PersonalityEngine:
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
             temporal_context=temporal_context,
-            stickers=AVAILABLE_STICKERS,
         )
 
 

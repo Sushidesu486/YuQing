@@ -168,7 +168,8 @@ class CognitiveProcessor:
                 rows = await cur.fetchall()
         for row in reversed(rows):
             if row.get("content_type") == "sticker":
-                messages.append({"role": row["role"], "content": f"[发送了 /{row['content']} 表情包]"})
+                # Opaque marker — LLM won't understand or mimic this
+                messages.append({"role": row["role"], "content": f"[SYS_EMOJI_PKT:{row['content']}]"})
             else:
                 messages.append({"role": row["role"], "content": row["content"]})
 
@@ -187,42 +188,45 @@ class CognitiveProcessor:
 
         logger.info(f"LLM response ({len(full_response)} chars): {full_response[:200]}...")
 
-        # --- Phase 8: Store assistant message ---
-        # Parse stickers from response before storing
-        valid_stickers = set()
+        # --- Phase 7.5: Sticker selection (BGE semantic matching) ---
+        sticker_name = None
+        sticker_defs = []
         try:
-            from app.core.personality import AVAILABLE_STICKERS
-            valid_stickers = set(AVAILABLE_STICKERS)
-        except Exception:
-            pass
+            from app.core.personality import STICKER_DEFINITIONS
+            sticker_defs = STICKER_DEFINITIONS
+            if sticker_defs:
+                model = self._get_embedding_model_for_sticker()
+                if model:
+                    # Encode response
+                    response_emb = model.encode(full_response).tolist()
+                    # Encode all sticker descriptions
+                    sticker_embs = []
+                    for s in sticker_defs:
+                        sticker_embs.append(model.encode(s["desc"]).tolist())
+                    # Find best match
+                    best_sim = -1.0
+                    best_path = None
+                    for i, s in enumerate(sticker_defs):
+                        sim = self._cosine_similarity(response_emb, sticker_embs[i])
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_path = s["path"]
+                    logger.debug(f"Sticker selection: best={best_path}, sim={best_sim:.3f}")
+                    if best_sim > 0.35:
+                        sticker_name = best_path
+        except Exception as e:
+            logger.debug(f"Sticker selection skipped: {e}")
 
-        sticker_names = []
+        # --- Phase 8: Store assistant message ---
+        # Clean response text (remove any accidental /sticker_name refs from LLM output)
         clean_response = full_response
-        if valid_stickers:
-            # Extract /category/name and /name (fallback) sticker tokens
-            found = re.findall(r'/([\w]+(?:/[\w]+)?)', full_response)
-            for token in found:
-                if token in valid_stickers:
-                    name = token  # already has category prefix
-                else:
-                    # Fallback: try to find matching sticker by name
-                    parts = token.split('/')
-                    basename = parts[-1] if len(parts) > 1 else parts[0]
-                    matches = [s for s in valid_stickers if s.endswith(f"/{basename}")]
-                    name = matches[0] if matches else None
-                if name and name not in sticker_names:
-                    sticker_names.append(name)
-            # Remove sticker references from stored text
-            if sticker_names:
-                # Build all possible patterns to remove (with and without category prefix)
-                for name in sticker_names:
-                    basename = name.split('/')[-1]
-                    clean_response = clean_response.replace(f"/{name}", "")
-                    clean_response = clean_response.replace(f"/{basename}", "")
-                # Clean up extra whitespace
-                clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
+        if sticker_name:
+            for s in sticker_defs:
+                basename = s["path"].split('/')[-1]
+                clean_response = clean_response.replace(f"/{s['path']}", "")
+                clean_response = clean_response.replace(f"/{basename}", "")
+            clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
 
-        # Store the text message (cleaned, without sticker refs)
         display_response = clean_response if clean_response else full_response
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -244,8 +248,8 @@ class CognitiveProcessor:
                         (title, conversation_id),
                     )
 
-        # Store sticker messages as separate rows
-        for sticker_name in sticker_names:
+        # Store sticker as a separate message row
+        if sticker_name:
             sticker_msg_id = secrets.token_hex(16)
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -264,8 +268,8 @@ class CognitiveProcessor:
             ),
         }
 
-        # --- Sticker events (after done) ---
-        for sticker_name in sticker_names:
+        # --- Sticker event (after done) ---
+        if sticker_name:
             yield {
                 "event": "sticker",
                 "data": json.dumps(
@@ -275,8 +279,6 @@ class CognitiveProcessor:
             }
 
         # --- Phase 9: Background tasks (fire-and-forget, runs after done is sent) ---
-
-        # --- Phase 9: Background tasks ---
 
         # Memory decay (run every ~10 exchanges based on conversation message count)
         try:
@@ -364,6 +366,21 @@ class CognitiveProcessor:
                     logger.info(f"Preferences learned: {learned}")
         except Exception as e:
             logger.debug(f"Preference learning skipped: {e}")
+
+
+    @staticmethod
+    def _get_embedding_model_for_sticker():
+        from app.core.memory import _get_embedding_model
+        return _get_embedding_model()
+
+    @staticmethod
+    def _cosine_similarity(a, b):
+        import numpy as np
+        a, b = np.array(a), np.array(b)
+        denom = (np.linalg.norm(a) * np.linalg.norm(b))
+        if denom == 0:
+            return 0.0
+        return float(np.dot(a, b) / denom)
 
 
 cognitive_processor = CognitiveProcessor()

@@ -56,7 +56,14 @@ async def get_conversation(conversation_id: str):
                 "FROM messages WHERE conversation_id = %s ORDER BY created_at",
                 (conversation_id,),
             )
-            messages = await cur.fetchall()
+            rows = await cur.fetchall()
+            messages = []
+            for r in rows:
+                msg = dict(r)
+                # Map content to sticker_name for sticker messages (frontend expects it)
+                if msg.get("content_type") == "sticker":
+                    msg["sticker_name"] = msg["content"]
+                messages.append(msg)
     return {"conversation": conv, "messages": messages}
 
 

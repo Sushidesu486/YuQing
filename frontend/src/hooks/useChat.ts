@@ -264,7 +264,7 @@ export function useChat() {
                   // If this was a user sticker, also trigger YuQing's response
                   // by sending a descriptive text message
                   if (data.sender === 'user') {
-                    pendingRef.current.push(`[发送了 /${data.name} 表情包]`);
+                    pendingRef.current.push(data.name ? `对方发来了一个贴纸` : `对方发来了一张贴纸`);
                     setTimeout(() => {
                       if (!sendingRef.current) flushMessages();
                     }, 300);
