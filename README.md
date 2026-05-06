@@ -168,7 +168,12 @@
 - **自我记忆去重**：与用户记忆共享 embedding 缓存，统一去重逻辑
 - **自我记忆合并**：embedding 聚类 + LLM 合并（self_* 类型使用第一人称专用 prompt）
 - **写入去重**：新记忆写入前 bge embedding 比对已有记忆（> 0.90 跳过，0.75-0.90 LLM 合并）
-- **睡眠清理**：每天凌晨 4 点自动聚类合并（≥ 0.70 阈值）
+- **睡眠清理**：每天自动执行 5 阶段神经科学启发的记忆维护（基于 ZenBrain + SHY 假说）
+  - 突触归一化：等比压缩所有记忆重要性（防通胀）
+  - 选择性 Replay：按情绪/新鲜度/显著性评分，强化重要记忆，减弱噪音
+  - 聚类合并：BGE 语义聚类 + LLM 合并相似记忆（≥ 0.70 阈值）
+  - 休眠剪枝：物理删除低重要性 + 长期未访问的记忆和弱链接
+  - 孤儿链接清理：删除指向已删除记忆的关联
 - 详见 [docs/memory-graph.md](docs/memory-graph.md)、[docs/memory-debug-panel.md](docs/memory-debug-panel.md)
 
 ### 2. 情感系统（用户情绪感知）
@@ -479,6 +484,10 @@ yuqing/
 | `MEMORY_DECAY_HALF_LIFE_DAYS` | 90 | 记忆重要性减半天数 |
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
+| `MEMORY_SLEEP_CLEANUP_HOUR` | 7 | 睡眠清理执行时间（小时） |
+| `SLEEP_DOWNSCALE_FACTOR` | 0.03 | 突触归一化缩小系数 |
+| `SLEEP_REPLAY_STRENGTHEN` | 0.05 | 选择性 Replay 强化幅度 |
+| `SLEEP_REPLAY_WEAKEN` | 0.03 | 选择性 Replay 减弱幅度 |
 | `EMBEDDING_MODEL` | BAAI/bge-base-zh-v1.5 | 中文嵌入模型（本地，768维） |
 | `MEMORY_FACT_TOP_K` | 8 | 显式注入的事实/事件条数上限 |
 | `MEMORY_BEHAVIOR_RULES_MAX` | 8 | 行为规则最大条数 |
