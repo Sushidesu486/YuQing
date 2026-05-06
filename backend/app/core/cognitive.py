@@ -168,10 +168,8 @@ class CognitiveProcessor:
                 rows = await cur.fetchall()
         for row in reversed(rows):
             if row.get("content_type") == "sticker":
-                # Opaque marker — LLM won't understand or mimic this
-                messages.append({"role": row["role"], "content": f"[SYS_EMOJI_PKT:{row['content']}]"})
-            else:
-                messages.append({"role": row["role"], "content": row["content"]})
+                continue  # Completely hide sticker messages from LLM context
+            messages.append({"role": row["role"], "content": row["content"]})
 
         # --- Phase 7: Stream LLM response ---
         assistant_msg_id = secrets.token_hex(16)
