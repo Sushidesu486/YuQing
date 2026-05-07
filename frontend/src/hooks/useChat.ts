@@ -264,7 +264,15 @@ export function useChat() {
                   // If this was a user sticker, also trigger YuQing's response
                   // by sending a descriptive text message
                   if (data.sender === 'user') {
-                    pendingRef.current.push(data.name ? `对方发来了一个贴纸` : `对方发来了一张贴纸`);
+                    // Map category to emotion hint for LLM context
+                    const catMap: Record<string, string> = {
+                      happy: '开心的', sad: '安慰的', teasing: '调皮的',
+                      shy: '害羞的', angry: '生气的', love: '喜欢的',
+                      tired: '犯困的', eating: '吃货的',
+                    };
+                    const cat = (data.name || '').split('/')[0];
+                    const hint = catMap[cat] || '';
+                    pendingRef.current.push(`对方发来了一个${hint}贴纸`);
                     setTimeout(() => {
                       if (!sendingRef.current) flushMessages();
                     }, 300);
