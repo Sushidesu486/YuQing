@@ -168,7 +168,10 @@ class CognitiveProcessor:
                 rows = await cur.fetchall()
         for row in reversed(rows):
             if row.get("content_type") == "sticker":
-                continue  # Completely hide sticker messages from LLM context
+                # Show YuQing's own stickers as natural description; skip user stickers (handled by trigger text)
+                if row["role"] == "assistant":
+                    messages.append({"role": "assistant", "content": f"（发了一张贴纸）"})
+                continue
             messages.append({"role": row["role"], "content": row["content"]})
 
         # --- Phase 7: Stream LLM response ---
@@ -186,43 +189,40 @@ class CognitiveProcessor:
 
         logger.info(f"LLM response ({len(full_response)} chars): {full_response[:200]}...")
 
-        # --- Phase 7.5: Sticker selection (BGE semantic matching) ---
+        # --- Phase 7.5: Extract sticker from LLM output ---
+        # LLM writes /sticker_name on a separate line; parse and validate against STICKER_DEFINITIONS
         sticker_name = None
         sticker_defs = []
         try:
             from app.core.personality import STICKER_DEFINITIONS
             sticker_defs = STICKER_DEFINITIONS
-            if sticker_defs:
-                model = self._get_embedding_model_for_sticker()
-                if model:
-                    # Encode response
-                    response_emb = model.encode(full_response).tolist()
-                    # Encode all sticker descriptions
-                    sticker_embs = []
-                    for s in sticker_defs:
-                        sticker_embs.append(model.encode(s["desc"]).tolist())
-                    # Find best match
-                    best_sim = -1.0
-                    best_path = None
-                    for i, s in enumerate(sticker_defs):
-                        sim = self._cosine_similarity(response_emb, sticker_embs[i])
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_path = s["path"]
-                    logger.debug(f"Sticker selection: best={best_path}, sim={best_sim:.3f}")
-                    if best_sim > 0.35:
-                        sticker_name = best_path
+            valid_names = {s["path"]: s for s in sticker_defs}
+            valid_basenames = {s["path"].split("/")[-1]: s["path"] for s in sticker_defs}
+
+            # Parse /sticker_name from LLM response (last line, or standalone line)
+            lines = full_response.strip().split('\n')
+            for line in reversed(lines):
+                stripped = line.strip()
+                match = re.match(r'^/(\w+)$', stripped)
+                if match:
+                    candidate = match.group(1)
+                    # Match by basename first, then full path
+                    if candidate in valid_basenames:
+                        sticker_name = valid_basenames[candidate]
+                    elif candidate in valid_names:
+                        sticker_name = candidate
+                    if sticker_name:
+                        break
         except Exception as e:
-            logger.debug(f"Sticker selection skipped: {e}")
+            logger.debug(f"Sticker extraction skipped: {e}")
 
         # --- Phase 8: Store assistant message ---
-        # Clean response text (remove any accidental /sticker_name refs from LLM output)
+        # Clean response text (remove sticker reference from stored text)
         clean_response = full_response
         if sticker_name:
-            for s in sticker_defs:
-                basename = s["path"].split('/')[-1]
-                clean_response = clean_response.replace(f"/{s['path']}", "")
-                clean_response = clean_response.replace(f"/{basename}", "")
+            basename = sticker_name.split('/')[-1]
+            clean_response = clean_response.replace(f"/{sticker_name}", "")
+            clean_response = clean_response.replace(f"/{basename}", "")
             clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
 
         display_response = clean_response if clean_response else full_response
@@ -364,21 +364,6 @@ class CognitiveProcessor:
                     logger.info(f"Preferences learned: {learned}")
         except Exception as e:
             logger.debug(f"Preference learning skipped: {e}")
-
-
-    @staticmethod
-    def _get_embedding_model_for_sticker():
-        from app.core.memory import _get_embedding_model
-        return _get_embedding_model()
-
-    @staticmethod
-    def _cosine_similarity(a, b):
-        import numpy as np
-        a, b = np.array(a), np.array(b)
-        denom = (np.linalg.norm(a) * np.linalg.norm(b))
-        if denom == 0:
-            return 0.0
-        return float(np.dot(a, b) / denom)
 
 
 cognitive_processor = CognitiveProcessor()

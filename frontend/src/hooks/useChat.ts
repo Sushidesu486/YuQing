@@ -151,8 +151,8 @@ export function useChat() {
 
           if (data.type === 'token' && data.content) {
             fullContent += data.content;
-            // Strip /sticker_name refs from displayed content
-            const displayContent = fullContent.replace(/\/[\w]+\/[\w]+/g, '').replace(/\n{3,}/g, '\n\n').trim();
+            // Strip /sticker_name from display (LLM outputs it as last line)
+            const displayContent = fullContent.replace(/\n\/\w+\s*$/, '').replace(/\n{3,}/g, '\n\n').trim();
             // Update placeholder with streaming content for real-time display
             setMessages((prev) => {
               const idx = prev.findIndex(m => m.id === PLACEHOLDER_ID);

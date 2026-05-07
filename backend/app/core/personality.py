@@ -166,6 +166,10 @@ class PersonalityEngine:
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
             temporal_context=temporal_context,
+            stickers=[
+                {"name": s["path"].split("/")[-1], "desc": s["desc"]}
+                for s in STICKER_DEFINITIONS
+            ],
         )
 
 
