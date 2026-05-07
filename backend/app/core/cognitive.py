@@ -282,19 +282,26 @@ class CognitiveProcessor:
             sticker_defs = STICKER_DEFINITIONS
             valid_names = {s["path"]: s for s in sticker_defs}
             valid_basenames = {s["path"].split("/")[-1]: s["path"] for s in sticker_defs}
+            # Also support matching by full path (e.g. /happy/peekaboo)
+            valid_names_set = set(valid_names.keys()) | set(valid_basenames.keys())
 
-            # Parse /sticker_name from LLM response (last line, or standalone line)
+            # Parse /sticker_name from LLM response (check all lines, prefer last match)
             lines = full_response.strip().split('\n')
             for line in reversed(lines):
                 stripped = line.strip()
-                match = re.match(r'^/(\w+)$', stripped)
+                # Match patterns: /peekaboo, /happy/peekaboo, /peekaboo （with trailing junk）
+                match = re.match(r'^(/[\w/]+)', stripped)
                 if match:
                     candidate = match.group(1)
-                    # Match by basename first, then full path
-                    if candidate in valid_basenames:
-                        sticker_name = valid_basenames[candidate]
+                    # Strip leading slash for lookup
+                    candidate_key = candidate.lstrip('/')
+                    # Try basename first
+                    if candidate_key in valid_basenames:
+                        sticker_name = valid_basenames[candidate_key]
                     elif candidate in valid_names:
-                        sticker_name = candidate
+                        sticker_name = valid_names[candidate]
+                    elif candidate_key in valid_names:
+                        sticker_name = valid_names[candidate_key]
                     if sticker_name:
                         break
         except Exception as e:
