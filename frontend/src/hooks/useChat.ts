@@ -175,6 +175,8 @@ export function useChat() {
               conversationIdRef.current = data.conversation_id;
               localStorage.setItem(CONVERSATION_KEY, data.conversation_id);
             }
+            // Stop spinner immediately — background tasks no longer block the stream
+            setIsTyping(false);
             // Don't break yet — sticker events may follow
           } else if (data.type === 'sticker') {
             setMessages((prev) => [
@@ -198,6 +200,7 @@ export function useChat() {
             if (data.type === 'done' && !doneHandled) {
               doneHandled = true;
               applyCleanedContent(data.message_id);
+              setIsTyping(false);
             }
           } catch {
             // Malformed JSON in buffer

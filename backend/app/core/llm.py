@@ -19,7 +19,11 @@ async def stream_completion(
     model: Optional[str] = None,
     **kwargs,
 ) -> AsyncGenerator[str, None]:
-    """Stream LLM response, yielding content chunks."""
+    """Stream LLM response, yielding content chunks.
+
+    Reasoning/thinking tokens (delta.reasoning_content) are silently skipped
+    so they don't block the content stream.
+    """
     model = model or settings.LITELLM_MODEL
     call_kwargs = {
         "model": model,
@@ -37,6 +41,8 @@ async def stream_completion(
         delta = chunk.choices[0].delta
         if delta.content:
             yield delta.content
+        # Reasoning tokens are available but intentionally not yielded
+        # to avoid blocking the content stream with invisible "thinking" output
 
 
 async def generate_completion(
@@ -111,6 +117,8 @@ async def stream_with_tools(
         # 1. Content token
         if delta.content:
             yield StreamEvent(type="content", content=delta.content)
+
+        # Reasoning tokens silently skipped (don't block content stream)
 
         # 2. Tool call deltas
         if delta.tool_calls:

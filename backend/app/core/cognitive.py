@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -359,49 +360,10 @@ class CognitiveProcessor:
                 ),
             }
 
-        # --- Phase 9: Background tasks (fire-and-forget, runs after done is sent) ---
+        # Generator ends here — stream closes, frontend spinner stops.
+        # All background tasks run as true fire-and-forget (don't block the stream).
 
-        # Memory decay (run every ~10 exchanges based on conversation message count)
-        try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
-                        (conversation_id,),
-                    )
-                    row = await cur.fetchone()
-                    msg_count = row[0] if row else 0
-            if msg_count % 10 == 0:
-                await memory_manager.apply_decay()
-        except Exception as e:
-            logger.debug(f"Memory decay skipped: {e}")
-
-        # Memory consolidation (trigger when count exceeds threshold, run every 20 exchanges)
-        try:
-            if msg_count % 20 == 0:
-                await memory_manager.consolidate_memories()
-        except Exception as e:
-            logger.debug(f"Memory consolidation skipped: {e}")
-
-        # Self-narrative update (check if regeneration needed, every 10 messages)
-        try:
-            if msg_count % 10 == 0:
-                from app.core.self_cognition import self_cognition_engine
-                await self_cognition_engine.check_and_update()
-        except Exception as e:
-            logger.debug(f"Self-narrative update skipped: {e}")
-
-        # Reflect-Evolve (personality evolution, every 40 messages)
-        try:
-            from app.config import settings as cfg
-            if msg_count % cfg.EVOLVE_REFLECT_INTERVAL == 0:
-                from app.core.self_cognition import self_cognition_engine
-                await self_cognition_engine.reflect_and_evolve(msg_count)
-        except Exception as e:
-            logger.debug(f"Reflect-Evolve skipped: {e}")
-
-        # Save emotion snapshot
+        # Save emotion snapshot (fast, keep inline)
         if user_emotion:
             try:
                 await mood_regulator.save_emotion_snapshot(
@@ -414,39 +376,58 @@ class CognitiveProcessor:
             except Exception as e:
                 logger.warning(f"Failed to save emotion snapshot: {e}")
 
-        # Extract memories (pass recalled facts for contradiction detection)
-        if settings.AUTO_MEMORY_EXTRACTION:
+        # --- Phase 9: Background tasks (true fire-and-forget) ---
+        async def _background_tasks():
             try:
-                extracted = await memory_manager.extract_and_store_memories(
-                    conversation_id, user_message, full_response, language,
-                    recalled_facts=layered_memory.get("facts", []) + layered_memory.get("events", []),
-                )
-                if extracted:
-                    yield {
-                        "event": "memory_extracted",
-                        "data": json.dumps({"type": "memory_extracted", "count": len(extracted)}, ensure_ascii=True),
-                    }
-            except Exception as e:
-                logger.warning(f"Memory extraction failed: {e}")
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
+                            (conversation_id,),
+                        )
+                        row = await cur.fetchone()
+                        msg_count = row[0] if row else 0
 
-        # Learn user preferences (every N user messages ≈ N*2 total messages)
-        try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
-                        (conversation_id,),
+                # Memory decay
+                if msg_count % 10 == 0:
+                    await memory_manager.apply_decay()
+
+                # Memory consolidation
+                if msg_count % 20 == 0:
+                    await memory_manager.consolidate_memories()
+
+                # Self-narrative update
+                if msg_count % 10 == 0:
+                    from app.core.self_cognition import self_cognition_engine
+                    await self_cognition_engine.check_and_update()
+
+                # Reflect-Evolve
+                from app.config import settings as cfg
+                if msg_count % cfg.EVOLVE_REFLECT_INTERVAL == 0:
+                    from app.core.self_cognition import self_cognition_engine
+                    await self_cognition_engine.reflect_and_evolve(msg_count)
+
+                # Extract memories
+                if settings.AUTO_MEMORY_EXTRACTION:
+                    extracted = await memory_manager.extract_and_store_memories(
+                        conversation_id, user_message, full_response, language,
+                        recalled_facts=layered_memory.get("facts", []) + layered_memory.get("events", []),
                     )
-                    row = await cur.fetchone()
-                    msg_count = row[0] if row else 0
-            if msg_count % (settings.PREFERENCE_LEARN_INTERVAL * 2) == 0:
-                learned = await preference_learner.learn_from_conversation(
-                    conversation_id, user_message, full_response
-                )
-                if learned:
-                    logger.info(f"Preferences learned: {learned}")
-        except Exception as e:
-            logger.debug(f"Preference learning skipped: {e}")
+                    if extracted:
+                        logger.info(f"Background: extracted {len(extracted)} memories")
+
+                # Learn user preferences
+                if msg_count % (settings.PREFERENCE_LEARN_INTERVAL * 2) == 0:
+                    learned = await preference_learner.learn_from_conversation(
+                        conversation_id, user_message, full_response
+                    )
+                    if learned:
+                        logger.info(f"Background: preferences learned: {learned}")
+            except Exception as e:
+                logger.debug(f"Background tasks error: {e}")
+
+        asyncio.create_task(_background_tasks())
 
 
 cognitive_processor = CognitiveProcessor()
