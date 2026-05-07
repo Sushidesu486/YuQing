@@ -526,7 +526,8 @@ function GraphTab() {
     return map;
   }, [memories]);
 
-  const { graphData, linkedIds } = useMemo(() => {
+  // Stable graph data — only changes when memories/links change, NOT on hover
+  const graphData = useMemo(() => {
     const memIds = new Set(memories.map(m => m.id));
     const validLinks = links.filter(l => memIds.has(l.source_id) && memIds.has(l.target_id));
 
@@ -546,17 +547,20 @@ function GraphTab() {
       strength: l.strength,
     }));
 
-    const ids = new Set<string>();
-    if (hoveredNode) {
-      ids.add(hoveredNode.id);
-      validLinks.forEach(l => {
-        if (l.source_id === hoveredNode.id) ids.add(l.target_id);
-        if (l.target_id === hoveredNode.id) ids.add(l.source_id);
-      });
-    }
+    return { nodes, links: graphLinks };
+  }, [memories, links]);
 
-    return { graphData: { nodes, links: graphLinks }, linkedIds: ids };
-  }, [memories, links, hoveredNode]);
+  // Hover highlight — separate from graphData to prevent re-animation
+  const linkedIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!hoveredNode) return ids;
+    ids.add(hoveredNode.id);
+    links.forEach(l => {
+      if (l.source_id === hoveredNode.id) ids.add(l.target_id);
+      if (l.target_id === hoveredNode.id) ids.add(l.source_id);
+    });
+    return ids;
+  }, [hoveredNode, links]);
 
   if (loading) return <div className="flex items-center justify-center py-16 text-sm text-gray-400">加载中...</div>;
 
@@ -566,7 +570,7 @@ function GraphTab() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-2">
         <div className="text-xs text-gray-400">
-          {memories.length} memories, {graphData.links.length} links
+          {memories.length} memories, {graphData.links.length}条关联
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
           {usedTypes.map(type => (
