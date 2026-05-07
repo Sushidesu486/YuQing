@@ -504,6 +504,7 @@ function GraphTab() {
   const [links, setLinks] = useState<MemoryLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const graphRef = useRef<any>(null);
 
   useEffect(() => {
@@ -526,7 +527,7 @@ function GraphTab() {
     return map;
   }, [memories]);
 
-  // Stable graph data — only changes when memories/links change, NOT on hover
+  // Stable graph data — only changes when memories/links change, NOT on hover/search
   const graphData = useMemo(() => {
     const memIds = new Set(memories.map(m => m.id));
     const validLinks = links.filter(l => memIds.has(l.source_id) && memIds.has(l.target_id));
@@ -562,25 +563,76 @@ function GraphTab() {
     return ids;
   }, [hoveredNode, links]);
 
+  // Search match highlight
+  const searchMatchIds = useMemo(() => {
+    if (!searchQuery.trim()) return null; // null = no search active
+    const q = searchQuery.trim().toLowerCase();
+    const ids = new Set<string>();
+    graphData.nodes.forEach(n => {
+      if (n.name.toLowerCase().includes(q)) ids.add(n.id);
+    });
+    return ids;
+  }, [searchQuery, graphData]);
+
+  // Focus camera on first search match
+  useEffect(() => {
+    if (!searchMatchIds || searchMatchIds.size === 0 || !graphRef.current) return;
+    const firstId = [...searchMatchIds][0];
+    const node = graphData.nodes.find(n => n.id === firstId);
+    if (node && node.x !== undefined && node.y !== undefined) {
+      graphRef.current.centerAt(node.x, node.y, 800);
+      graphRef.current.zoom(2, 800);
+    }
+  }, [searchMatchIds, graphData]);
+
+  // Whether any highlight mode is active (hover or search)
+  const highlightIds = useMemo(() => {
+    if (linkedIds.size > 0) return linkedIds;
+    if (searchMatchIds) return searchMatchIds;
+    return null;
+  }, [linkedIds, searchMatchIds]);
+
   if (loading) return <div className="flex items-center justify-center py-16 text-sm text-gray-400">加载中...</div>;
 
   const usedTypes = [...new Set(memories.map(m => m.memory_type).filter(Boolean))];
+  const matchCount = searchMatchIds?.size;
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs text-gray-400">
+      {/* Search + legend bar */}
+      <div className="flex items-center gap-3 mb-2">
+        <div className="flex-1 relative">
+          <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="搜索记忆内容定位..."
+            className="w-full pl-7 pr-2 py-1 text-xs rounded border border-gray-200 outline-none focus:border-blue-400 bg-gray-50"
+          />
+        </div>
+        <div className="text-xs text-gray-400 shrink-0">
           {memories.length} memories, {graphData.links.length}条关联
         </div>
+      </div>
+
+      {/* Type legend + search result count */}
+      <div className="flex items-center justify-between mb-2">
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
           {usedTypes.map(type => (
             <div key={type} className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TYPE_NODE_COLORS[type] || DEFAULT_NODE_COLOR }} />
-              <span className="text-[9px] text-gray-400">{type}</span>
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: TYPE_NODE_COLORS[type] || DEFAULT_NODE_COLOR }} />
+              <span className="text-[9px] text-gray-500">{type}</span>
             </div>
           ))}
         </div>
+        {matchCount !== undefined && (
+          <span className="text-[10px] text-blue-500">{matchCount} 条匹配</span>
+        )}
       </div>
+
       <div className="flex-1 relative">
         <ForceGraph2D
           ref={graphRef}
@@ -596,30 +648,40 @@ function GraphTab() {
             return lines.join('\n');
           }}
           nodeColor={node => {
-            if (hoveredNode) {
-              return linkedIds.has(node.id) ? node.color : 'rgba(200,200,200,0.2)';
+            if (highlightIds) {
+              return highlightIds.has(node.id) ? node.color : 'rgba(200,200,200,0.15)';
             }
             return node.color;
           }}
           nodeVal={node => node.val}
-          nodeCanvasObjectMode={() => 'replace'}
+          nodeCanvasObjectMode={() => 'after'}
           nodeCanvasObject={(node, ctx, globalScale) => {
             const label = memoryMap.get(node.id)?.content ?? '';
+            if (!label) return;
             const fontSize = 10 / globalScale;
             ctx.font = `${fontSize}px Sans-Serif`;
-            const textWidth = ctx.measureText(label.length > 20 ? label.slice(0, 20) + '...' : label).width;
-            const bgWidth = textWidth + fontSize;
-            const bgHeight = fontSize * 1.4;
+            const truncated = label.length > 18 ? label.slice(0, 18) + '...' : label;
+            const textWidth = ctx.measureText(truncated).width;
             const x = node.x ?? 0;
             const y = node.y ?? 0;
 
-            ctx.fillStyle = 'rgba(255,255,255,0.85)';
-            ctx.fillRect(x - bgWidth / 2, y - bgHeight / 2, bgWidth, bgHeight);
+            // Text background pill
+            const bgPadX = fontSize * 0.4;
+            const bgPadY = fontSize * 0.2;
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.beginPath();
+            ctx.roundRect(
+              x - textWidth / 2 - bgPadX,
+              y - fontSize / 2 - bgPadY,
+              textWidth + bgPadX * 2,
+              fontSize + bgPadY * 2,
+              fontSize * 0.3,
+            );
+            ctx.fill();
 
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillStyle = '#374151';
-            const truncated = label.length > 20 ? label.slice(0, 20) + '...' : label;
             ctx.fillText(truncated, x, y);
           }}
           linkWidth={link => 1 + link.strength * 3}
