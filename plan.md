@@ -1,6 +1,6 @@
 # YuQing 语晴 — 开发计划
 
-> 最后更新：2026-05-06
+> 最后更新：2026-05-07
 
 ---
 
@@ -34,6 +34,8 @@
 - [x] 本地中文嵌入模型 BAAI/bge-base-zh-v1.5（768 维，无需额外 API）
 - [x] 自动记忆提取：LLM 分类（7 种类型 + valence + confidence）→ MySQL + ChromaDB
 - [x] 语义召回：BGE embedding cosine similarity 搜索（200 候选 → 批量 encode → 排序，top_k=20）
+- [x] 时间感知记忆召回：时间查询检测 + query 清洗 + 动态 top_k（≤7天→30）+ 时间线按日期分组注入
+- [x] Importance 分级校准：5 级标准（0.1-1.0）+ keyword safety net（中英文琐碎/重要关键词）
 - [x] Pinned facts 保障：importance >= 0.7 的记忆强制注入（最多 4 条），不参与排序竞争
 - [x] 记忆衰减：90 天半衰期，未被访问的记忆重要性逐渐降低
 - [x] 记忆巩固：每 20 轮合并相关记忆，压缩冗余
@@ -49,6 +51,7 @@
 - [x] 睡眠清理：5 阶段神经科学启发记忆维护（突触归一化 + 选择性 Replay + 聚类合并 + 休眠剪枝 + 孤儿链接清理）
 - [x] 错误记忆纠正：LLM 检测用户信息与已有记忆矛盾，旧记忆标记 is_invalid，正确版本插入
 - [x] 失效记忆过滤：所有记忆召回查询排除 is_invalid=1 的记忆
+- [x] 当日记忆全量注入：当日全部有效记忆绕过分层上限（fact/episodic/behavior_rule caps）直接注入，保障同日对话连贯性；debug_recall 新增 today_inject 阶段
 
 ### 信息检索系统（InfoRetrievalEngine）
 - [x] Tavily API 集成（aiohttp 异步，15s 超时）
@@ -60,6 +63,7 @@
 - [x] 频率控制：每个兴趣独立记录上次检索时间（app_settings），避免重复搜索
 - [x] 手动触发 API：POST /api/memories/trigger-info-retrieval + GET /api/knowledge
 - [x] 无 API key 时全部功能静默跳过
+- [x] RSS 订阅模式：APPSO via SupSub，guid 去重，替代 Tavily 主动检索
 
 ### 自我认知系统（SelfCognitionEngine）
 - [x] 自我叙事合成：LLM 将零散 self_* 记忆 + YAML 性格 traits 合成为连贯的第一人称叙事
@@ -118,6 +122,19 @@
 - [x] 离线兜底：`/api/proactive/recent` 页面刷新时补发
 - [x] 心情集成：缺席时应用心情衰减
 
+### Tool Calling 系统
+- [x] recall_memories：语义搜索 + 时间范围过滤 + 时间戳格式化；prompt 强调时间查询必须调用
+- [x] search_web：Tavily API 实时搜索；prompt 区分外部信息 vs 用户个人信息
+- [x] read_latest_articles：RSS 订阅源读取；可主动调用
+- [x] 工具注册表 + BaseTool 抽象 + 自动 prompt 注入
+
+### Prompt 工程
+- [x] System prompt 精简：合并重复 yuqing_mood 段落、强化"不刻意表演"引导、整合 Basic Rules（ZH+EN）
+- [x] EN 提取 prompt 对齐 ZH：6 类 type 标签、valence/confidence 字段、importance 5 级校准
+- [x] 巩固 prompt 字段统一：category → memory_type，emotion_pattern → emotion
+- [x] Keyword safety net 中英文覆盖：trivial（天气/weather/haha）+ important（毕业/graduated/offer）
+- [x] 表情包 LLM 驱动：从 BGE 后处理改为 prompt 注入
+
 ### 用户偏好学习（PreferenceLearner）
 - [x] 5 维偏好自动学习：response_length / topic_style / emotional_tone / humor_level / depth_style
 - [x] 每 5 轮对话触发一次
@@ -135,7 +152,8 @@
 - [x] EmotionDisplay：情绪显示
 - [x] SettingsModal：设置面板
 - [x] Sidebar：对话列表侧栏
-- [x] MemoryDebugPanel：记忆调试面板（4 tabs：概览/记忆列表/召回调试/关联图 SVG）
+- [x] MemoryDebugPanel：记忆调试面板（4 tabs：概览/记忆列表/召回调试/关联图）
+- [x] 关联图重写：react-force-graph-2d 力导向图 + 搜索定位 + 悬浮稳定（useMemo 分离）
 
 ### 数据库 Bug 修复
 - [x] `user_preferences`：SELECT 缺少 `created_at`/`updated_at` 列
@@ -646,6 +664,11 @@ Phase 3 — 差异化 ✅ 已完成
 
 ## P2 — 高级认知能力
 
+### 3.时间感知能力
+    目前YuQing的记忆系统仅仅支持查找语义相近，而无法更具时间信息查找，而记忆的时间以及access time仅仅影响Importance
+    解决方案大致有两条路径可以探索： 
+    1. 在每条memory向量化前加上时间的信息，一起向量化，使得时间维度能够加入到bge到运算汇总
+    2. 召回信息后也能够通过LLM通过反思thinking发现召回信息内容是否相匹配，否则
 ### 4. 元记忆系统
 - [ ] 追踪"用户的想法如何演变"
 - [ ] 识别想法的催化剂（挫折、灵感、限制、机会）

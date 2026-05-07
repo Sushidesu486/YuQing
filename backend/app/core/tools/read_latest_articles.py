@@ -15,8 +15,8 @@ class ReadLatestArticlesTool(BaseTool):
         return ToolDefinition(
             name="read_latest_articles",
             description=(
-                "读取 RSS 订阅源的最新文章列表。适合用来查看最近有什么新闻、"
-                "公众号更新了什么。不需要用户特别请求，当你觉得需要了解最新资讯时可以主动使用。"
+                "读取 RSS 订阅源的最新文章列表。当你想了解最近有什么新闻或公众号更新时使用。"
+                "不需要用户特别请求，当你觉得某条信息值得分享时可以主动调用。"
             ),
             parameters=[
                 ToolParameter(

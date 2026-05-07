@@ -77,10 +77,13 @@ importance 校准标准（0-1）：
 MEMORY_EXTRACT_PROMPT_EN = """Analyze the following conversation, extract information, and detect memory contradictions.
 
 Category 1: Important information about {user_name}
-- Factual information (name, preferences, occupation, etc.)
-- Expressed preferences and hobbies
-- Important emotional or life events
-- {user_name}'s values and beliefs
+Type descriptions:
+- fact: Factual information (name, identity, occupation, location, etc.)
+- preference: Expressed likes, dislikes, habits
+- event: Specific events with a time component
+- episodic: Experiences or scenes with strong emotional coloring
+- emotion: Recurring emotional response patterns
+- procedural: Interaction patterns (chat style, timing habits, etc.)
 
 Category 2: Things YuQing expressed about herself
 - self_interest: Hobbies and interests
@@ -106,42 +109,41 @@ Conversation:
 {conversation}
 
 Return in JSON format:
-{
+{{
   "user_memories": [
-    {"content": "memory content", "category": "fact/preference/event/emotion_pattern", "importance": 0.5}
+    {{"content": "memory content", "memory_type": "fact/preference/event/episodic/emotion/procedural", "importance": 0.5, "valence": 0.0, "confidence": 0.5}}
   ],
   "self_memories": [
-    {"content": "YuQing's self-expression", "memory_type": "self_interest/self_experience/self_opinion/self_habit", "importance": 0.5}
+    {{"content": "YuQing's self-expression", "memory_type": "self_interest/self_experience/self_opinion/self_habit", "importance": 0.5}}
   ],
   "corrections": [
-    {"memory_id": "ID of memory to correct", "corrected_content": "correct content", "reason": "brief explanation"}
+    {{"memory_id": "ID of memory to correct", "corrected_content": "correct content", "reason": "brief explanation"}}
   ]
-}
-
-If a category has nothing worth remembering, return an empty array [].
+}}
 
 importance calibration (0-1):
 - 0.9-1.0: Major life events (graduation, job change, competition win, moving, breakup)
 - 0.7-0.8: Important info (career, school, long-term plans, core preferences, family)
-- 0.5-0.6: General info (daily habits, near-term plans, ordinary preferences)
-- 0.3-0.4: Trivial (casual remarks, weather comments, what they ate)
+- 0.5-0.6: General info (daily habits, near-term plans, ordinary preferences, interesting opinions)
+- 0.3-0.4: Trivial (casual remarks, weather comments, what they ate, said thanks)
 - 0.1-0.2: Barely worth remembering (filler responses, meaningless small talk)
 Important: Do NOT extract casual small talk (e.g. weather comments, "fine", "haha") as memories. Only extract information with long-term reference value.
-If no contradictions, corrections should be an empty array [].
+
+If a category has nothing worth remembering, return an empty array []. If no contradictions, corrections should be an empty array [].
 Return only JSON, no other text."""
 
 CONSOLIDATE_PROMPT_ZH = """以下是关于同一个人的若干条记忆，其中一些可能是重复或相似的。请合并和精简这些记忆：
 - 合并重复或高度相似的记忆
 - 保留所有独特的细节
 - 用更精炼的方式表达
-- 每条合并后的记忆保持原有的 category
+- 每条合并后的记忆保持原有的 memory_type
 
 原始记忆：
 {memories}
 
 请以JSON数组格式返回合并后的记忆，每条包含：
 - "content": 合并后的记忆内容
-- "category": 类别（fact/preference/event/emotion_pattern）
+- "memory_type": 类型（fact/preference/event/episodic/emotion/procedural）
 - "importance": 重要性（0.0-1.0，合并后的记忆重要性取最高值）
 - "source_ids": 被合并的原始记忆ID列表
 
@@ -494,6 +496,37 @@ class MemoryManager:
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
+        # 5.5. Today's memories — inject all (bypass semantic search limits)
+        if settings.MEMORY_TODAY_INJECT_ALL:
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id, content, memory_type, importance, valence, confidence, access_count "
+                        "FROM memories WHERE is_invalid = 0 "
+                        "AND memory_type NOT LIKE 'self_%%' "
+                        "AND created_at >= %s "
+                        "ORDER BY created_at DESC LIMIT %s",
+                        (today_start, settings.MEMORY_TODAY_MAX),
+                    )
+                    today_rows = await cur.fetchall()
+            existing_ids = {r["id"] for r in recalled}
+            for row in today_rows:
+                if row["id"] not in existing_ids:
+                    recalled.append({
+                        "id": row["id"],
+                        "content": row["content"],
+                        "distance": 0.0,
+                        "metadata": {
+                            "category": row.get("memory_type") or "fact",
+                            "importance": float(row["importance"]),
+                            "memory_type": row.get("memory_type") or "fact",
+                            "valence": float(row["valence"]) if row.get("valence") is not None else None,
+                            "confidence": float(row["confidence"]) if row.get("confidence") is not None else 0.5,
+                        },
+                        "_is_today": True,
+                    })
+
         # 6. Build layered memory structure
         layered_memory = await self._build_layered_memory(recalled, current_mood_warmth=current_mood_warmth,
                                                            is_temporal_query=is_temporal)
@@ -592,8 +625,41 @@ class MemoryManager:
             dormant_ids = {r["id"] for r in search_results + pinned_clean + spread_memories}
             dormant = [d for d in dormant if d["id"] not in dormant_ids]
 
+        # Stage 4.5: today inject
+        today_injected = []
+        if cfg.MEMORY_TODAY_INJECT_ALL:
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id, content, memory_type, importance, valence, confidence, access_count "
+                        "FROM memories WHERE is_invalid = 0 "
+                        "AND memory_type NOT LIKE 'self_%%' "
+                        "AND created_at >= %s "
+                        "ORDER BY created_at DESC LIMIT %s",
+                        (today_start, cfg.MEMORY_TODAY_MAX),
+                    )
+                    today_rows = await cur.fetchall()
+            existing_ids = {r["id"] for r in search_results + pinned_clean + spread_memories + dormant}
+            for row in today_rows:
+                if row["id"] not in existing_ids:
+                    mem_dict = {
+                        "id": row["id"],
+                        "content": row["content"],
+                        "distance": 0.0,
+                        "metadata": {
+                            "category": row.get("memory_type") or "fact",
+                            "importance": float(row["importance"]),
+                            "memory_type": row.get("memory_type") or "fact",
+                            "valence": float(row["valence"]) if row.get("valence") is not None else None,
+                            "confidence": float(row["confidence"]) if row.get("confidence") is not None else 0.5,
+                        },
+                        "_is_today": True,
+                    }
+                    today_injected.append(mem_dict)
+
         # Stage 5: final scored list
-        all_recalled = search_results + pinned_clean + spread_memories + dormant
+        all_recalled = search_results + pinned_clean + spread_memories + dormant + today_injected
 
         def _relevance_score(mem: dict) -> float:
             semantic = 1.0 - mem.get("distance", 1.0)
@@ -615,7 +681,9 @@ class MemoryManager:
                 "content": m["content"],
                 "memory_type": m.get("metadata", {}).get("memory_type"),
                 "importance": m.get("metadata", {}).get("importance"),
-                "source": "semantic_search" if not m.get("_via_link") and not m.get("_is_dormant") else ("activation_spread" if m.get("_via_link") else "dormant"),
+                "source": "today_inject" if m.get("_is_today")
+                    else "semantic_search" if not m.get("_via_link") and not m.get("_is_dormant")
+                    else ("activation_spread" if m.get("_via_link") else "dormant"),
                 "semantic_sim": round(1.0 - m.get("distance", 1.0), 4),
                 "activation": round(m.get("_activation", 1.0), 4),
                 "hybrid_score": m["_score"],
@@ -637,6 +705,10 @@ class MemoryManager:
             "stage_dormant": [
                 {"id": d["id"], "content": d["content"], "dormant_days": d.get("dormant_days")}
                 for d in dormant
+            ],
+            "stage_today_inject": [
+                {"id": m["id"], "content": m["content"], "memory_type": m.get("metadata", {}).get("memory_type")}
+                for m in today_injected
             ],
             "stage_final_scored": final_scored,
             "stage_layered": layered,
@@ -987,14 +1059,14 @@ class MemoryManager:
 
         remaining.sort(key=_relevance_score, reverse=True)
 
-        # Process remaining memories by type
-        for mem in remaining:
+        def _process_mem(mem: dict, no_caps: bool = False):
+            """Process a single memory into the layered structure."""
             mt = mem.get("memory_type", "fact")
             content = mem.get("content", "")
             metadata = mem.get("metadata", {})
 
             if mt == "fact":
-                if len(layered["facts"]) < fact_max:  # total facts limit
+                if no_caps or len(layered["facts"]) < fact_max:
                     layered["facts"].append({
                         "id": mem["id"],
                         "content": content,
@@ -1010,7 +1082,7 @@ class MemoryManager:
                 })
 
             elif mt == "episodic":
-                if len(layered["episodic"]) < episodic_max:
+                if no_caps or len(layered["episodic"]) < episodic_max:
                     valence = float(metadata.get("valence", 0))
                     layered["episodic"].append({
                         "content": content,
@@ -1019,7 +1091,6 @@ class MemoryManager:
                     })
 
             elif mt == "emotion":
-                # Extract trigger patterns for emotion influences
                 trigger = content
                 expected_valence = float(metadata.get("valence", 0))
                 layered["emotion_influences"].append({
@@ -1029,19 +1100,25 @@ class MemoryManager:
                 })
 
             elif mt in ("preference", "procedural"):
-                # Try to convert to behavior rules using regex patterns
                 rule = self._content_to_behavior_rule(content)
-                if rule and len(layered["behavior_rules"]) < behavior_max:
+                if rule and (no_caps or len(layered["behavior_rules"]) < behavior_max):
                     layered["behavior_rules"].append(rule)
                 else:
-                    # No pattern matched, keep as fact
-                    if len(layered["facts"]) < fact_max:
+                    if no_caps or len(layered["facts"]) < fact_max:
                         layered["facts"].append({
                             "id": mem["id"],
                             "content": content,
                             "memory_type": mt,
                             "created_at_relative": _relative_time(mem["id"]),
                         })
+
+        # Split into today vs older — today's memories bypass per-type caps
+        today_mems = [m for m in remaining if m.get("_is_today")]
+        older_mems = [m for m in remaining if not m.get("_is_today")]
+        for mem in today_mems:
+            _process_mem(mem, no_caps=True)
+        for mem in older_mems:
+            _process_mem(mem, no_caps=False)
 
         # Post-process: when temporal query, build chronological view grouped by date
         if is_temporal_query and settings.MEMORY_TEMPORAL_ORDERED_INJECTION:
@@ -1180,9 +1257,11 @@ class MemoryManager:
             importance = float(mem.get("importance", 0.5))
             valence = float(mem.get("valence", 0.0))
 
-            # Keyword-based importance safety net
-            _trivial_keywords = ["天气", "随便", "没啥", "哈哈", "嗯嗯", "不错啊", "还行", "没事", "无所谓"]
-            _important_keywords = ["毕业", "工作", "比赛", "搬家", "分手", "考研", "创业", "offer", "获奖", "升职", "实习", "入职", "出国", "买房", "结婚"]
+            # Keyword-based importance safety net (both ZH and EN)
+            _trivial_keywords = ["天气", "随便", "没啥", "哈哈", "嗯嗯", "不错啊", "还行", "没事", "无所谓",
+                                 "weather", "whatever", "lol", "haha", "fine", "nothing much", "idk"]
+            _important_keywords = ["毕业", "工作", "比赛", "搬家", "分手", "考研", "创业", "offer", "获奖", "升职", "实习", "入职", "出国", "买房", "结婚",
+                                   "graduated", "new job", "breakup", "moved", "engaged", "promotion", "offer"]
             has_trivial = any(kw in content for kw in _trivial_keywords)
             has_important = any(kw in content for kw in _important_keywords)
             if has_trivial and not has_important:

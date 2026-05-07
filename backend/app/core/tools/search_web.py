@@ -15,8 +15,9 @@ class SearchWebTool(BaseTool):
         return ToolDefinition(
             name="search_web",
             description=(
-                "搜索互联网获取最新信息。当你需要查找实时信息、新闻、产品发布、"
-                "或者用户询问了你不确定的事情时使用。"
+                "搜索互联网获取外部最新信息。当你需要查找新闻、产品信息、技术资料、"
+                "或者用户问了一个你不确定的外部事实时使用。"
+                "注意：关于用户个人信息的问题应该用 recall_memories，不要用 search_web。"
             ),
             parameters=[
                 ToolParameter(

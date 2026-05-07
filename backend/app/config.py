@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     MEMORY_PINNED_FACTS_MAX: int = 4
     MEMORY_SEARCH_TEMPORAL_TOP_K: int = 30
     MEMORY_TEMPORAL_ORDERED_INJECTION: bool = True
+    MEMORY_TODAY_INJECT_ALL: bool = True   # 全量注入当日记忆（不受分层上限约束）
+    MEMORY_TODAY_MAX: int = 50             # 当日记忆软上限
     SELF_MEMORY_ENABLED: bool = True
     MEMORY_CLASSIFY_ENABLED: bool = True
 
