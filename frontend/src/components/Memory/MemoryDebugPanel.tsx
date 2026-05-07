@@ -509,7 +509,7 @@ function GraphTab() {
   useEffect(() => {
     (async () => {
       const [mRes, lRes] = await Promise.allSettled([
-        memoryApi.list(undefined, 200),
+        memoryApi.list(undefined, 999),
         memoryApi.getLinks(),
       ]);
       if (mRes.status === 'fulfilled') setMemories(mRes.value);
@@ -618,14 +618,19 @@ function GraphTab() {
             const truncated = label.length > 20 ? label.slice(0, 20) + '...' : label;
             ctx.fillText(truncated, x, y);
           }}
-          linkWidth={link => 0.5 + link.strength * 2}
-          linkColor={() => hoveredNode ? 'rgba(99,102,241,0.3)' : 'rgba(0,0,0,0.08)'}
+          linkWidth={link => 1 + link.strength * 3}
+          linkColor={link => {
+            if (hoveredNode) {
+              const src = typeof link.source === 'object' ? link.source.id : link.source;
+              const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+              if (src === hoveredNode.id || tgt === hoveredNode.id) return 'rgba(99,102,241,0.7)';
+              return 'rgba(0,0,0,0.03)';
+            }
+            return 'rgba(99,102,241,0.15)';
+          }}
           linkDirectionalArrowLength={0}
           onNodeHover={node => {
             setHoveredNode(node as GraphNode | null);
-            if (graphRef.current) {
-              graphRef.current.d3Force('charge').strength(node ? -80 : -100);
-            }
           }}
           onNodeDragEnd={node => {
             if (node) {
@@ -637,7 +642,7 @@ function GraphTab() {
           enableNodeDrag={true}
           enableZoomInteraction={true}
           enablePanInteraction={true}
-          d3={{ forceCharge: { strength: -100 }, forceLink: { distance: 60 } }}
+          d3={{ forceCharge: { strength: -120 }, forceLink: { distance: 100 } }}
           backgroundColor="#f9fafb"
         />
       </div>
