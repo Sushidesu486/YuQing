@@ -34,8 +34,9 @@ async def get_memory_links():
                 "m1.content AS source_content, m1.memory_type AS source_type, "
                 "m2.content AS target_content, m2.memory_type AS target_type "
                 "FROM memory_links ml "
-                "LEFT JOIN memories m1 ON ml.source_id = m1.id "
-                "LEFT JOIN memories m2 ON ml.target_id = m2.id "
+                "LEFT JOIN memories m1 ON ml.source_id = m1.id AND m1.is_invalid = 0 "
+                "LEFT JOIN memories m2 ON ml.target_id = m2.id AND m2.is_invalid = 0 "
+                "WHERE m1.id IS NOT NULL AND m2.id IS NOT NULL "
                 "ORDER BY ml.strength DESC"
             )
             return await cur.fetchall()

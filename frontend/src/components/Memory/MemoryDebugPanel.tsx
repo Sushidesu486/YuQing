@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Component } from 'react';
+import ForceGraph2D from 'react-force-graph-2d';
 import { memoryApi } from '../../services/api';
 import type {
   MemoryStats,
@@ -30,6 +31,10 @@ const TYPE_NODE_COLORS: Record<string, string> = {
   episodic: '#f97316',
   emotion: '#ef4444',
   procedural: '#6b7280',
+  self_interest: '#ec4899',
+  self_experience: '#f59e0b',
+  self_opinion: '#06b6d4',
+  self_habit: '#14b8a6',
 };
 const DEFAULT_NODE_COLOR = '#9ca3af';
 const TYPE_OPTIONS = ['all', 'fact', 'preference', 'event', 'episodic', 'emotion', 'procedural'];
@@ -476,21 +481,35 @@ function LayeredSection({ title, items }: { title: string; items: Array<{ conten
   );
 }
 
-/* ── Tab: Graph ─────────────────────────────────────────── */
+/* ── Tab: Graph (react-force-graph-2d) ──────────────────── */
+
+interface GraphNode {
+  id: string;
+  name: string;
+  memory_type?: string;
+  importance?: number;
+  val?: number;
+  color: string;
+  created_at?: string;
+}
+
+interface GraphLink {
+  source: string;
+  target: string;
+  strength: number;
+}
 
 function GraphTab() {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [links, setLinks] = useState<MemoryLink[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
+  const graphRef = useRef<any>(null);
 
   useEffect(() => {
     (async () => {
       const [mRes, lRes] = await Promise.allSettled([
-        memoryApi.list(undefined, 100),
+        memoryApi.list(undefined, 200),
         memoryApi.getLinks(),
       ]);
       if (mRes.status === 'fulfilled') setMemories(mRes.value);
@@ -501,114 +520,126 @@ function GraphTab() {
     })();
   }, []);
 
-  // Circular layout with animation
-  useEffect(() => {
-    if (memories.length === 0) return;
-    const cx = 300, cy = 250, r = 180;
-    const pos = new Map<string, { x: number; y: number }>();
-    memories.forEach((m, i) => {
-      const angle = (2 * Math.PI * i) / memories.length - Math.PI / 2;
-      pos.set(m.id, {
-        x: cx + r * Math.cos(angle),
-        y: cy + r * Math.sin(angle),
-      });
-    });
-    setPositions(pos);
-  }, [memories]);
-
-  const connectedIds = useMemo(() => {
-    if (!hoveredId) return new Set<string>();
-    const ids = new Set<string>([hoveredId]);
-    links.forEach(l => {
-      if (l.source_id === hoveredId) ids.add(l.target_id);
-      if (l.target_id === hoveredId) ids.add(l.source_id);
-    });
-    return ids;
-  }, [hoveredId, links]);
-
   const memoryMap = useMemo(() => {
     const map = new Map<string, MemoryItem>();
     memories.forEach(m => map.set(m.id, m));
     return map;
   }, [memories]);
 
+  const { graphData, linkedIds } = useMemo(() => {
+    const memIds = new Set(memories.map(m => m.id));
+    const validLinks = links.filter(l => memIds.has(l.source_id) && memIds.has(l.target_id));
+
+    const nodes: GraphNode[] = memories.map(m => ({
+      id: m.id,
+      name: m.content,
+      memory_type: m.memory_type,
+      importance: m.importance,
+      val: Math.max(3, Math.min(15, (m.importance ?? 0.5) * 12)),
+      color: TYPE_NODE_COLORS[m.memory_type || ''] || DEFAULT_NODE_COLOR,
+      created_at: m.created_at,
+    }));
+
+    const graphLinks: GraphLink[] = validLinks.map(l => ({
+      source: l.source_id,
+      target: l.target_id,
+      strength: l.strength,
+    }));
+
+    const ids = new Set<string>();
+    if (hoveredNode) {
+      ids.add(hoveredNode.id);
+      validLinks.forEach(l => {
+        if (l.source_id === hoveredNode.id) ids.add(l.target_id);
+        if (l.target_id === hoveredNode.id) ids.add(l.source_id);
+      });
+    }
+
+    return { graphData: { nodes, links: graphLinks }, linkedIds: ids };
+  }, [memories, links, hoveredNode]);
+
   if (loading) return <div className="flex items-center justify-center py-16 text-sm text-gray-400">加载中...</div>;
 
+  const usedTypes = [...new Set(memories.map(m => m.memory_type).filter(Boolean))];
+
   return (
-    <div className="flex flex-col h-full" ref={containerRef}>
-      <div className="text-xs text-gray-400 mb-2">
-        {memories.length} 个记忆, {links.length} 条关联
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-gray-400">
+          {memories.length} memories, {graphData.links.length} links
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          {usedTypes.map(type => (
+            <div key={type} className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TYPE_NODE_COLORS[type] || DEFAULT_NODE_COLOR }} />
+              <span className="text-[9px] text-gray-400">{type}</span>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="flex-1 overflow-auto">
-        <svg ref={svgRef} viewBox="0 0 600 500" className="w-full h-full bg-gray-50 rounded-lg">
-          {/* Links */}
-          {links.map(link => {
-            const s = positions.get(link.source_id);
-            const t = positions.get(link.target_id);
-            if (!s || !t) return null;
-            const isHighlighted = hoveredId && (link.source_id === hoveredId || link.target_id === hoveredId);
-            return (
-              <line
-                key={link.id}
-                x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                stroke={isHighlighted ? '#6366f1' : '#e5e7eb'}
-                strokeWidth={isHighlighted ? 1 + link.strength * 3 : 0.5 + link.strength * 1.5}
-                strokeOpacity={hoveredId ? (isHighlighted ? 0.8 : 0.1) : 0.4}
-              />
-            );
-          })}
-          {/* Nodes */}
-          {memories.map(m => {
-            const pos = positions.get(m.id);
-            if (!pos) return null;
-            const isHovered = hoveredId === m.id;
-            const isConnected = hoveredId && connectedIds.has(m.id);
-            const color = TYPE_NODE_COLORS[m.memory_type || ''] || DEFAULT_NODE_COLOR;
-            const opacity = hoveredId ? (isHovered || isConnected ? 1 : 0.2) : 1;
-            return (
-              <g key={m.id} opacity={opacity}>
-                <circle
-                  cx={pos.x} cy={pos.y} r={isHovered ? 8 : 6}
-                  fill={color}
-                  stroke="white"
-                  strokeWidth={2}
-                  className="cursor-pointer transition-all"
-                  onMouseEnter={() => setHoveredId(m.id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                />
-                {isHovered && (
-                  <g>
-                    <rect
-                      x={pos.x - 120} y={pos.y - 32} width={240} height={40}
-                      rx={6} fill="white" stroke="#e5e7eb"
-                    />
-                    <text
-                      x={pos.x} y={pos.y - 14}
-                      textAnchor="middle" fontSize={10} fill="#374151"
-                    >
-                      {m.content.length > 40 ? m.content.slice(0, 40) + '...' : m.content}
-                    </text>
-                    <text
-                      x={pos.x} y={pos.y}
-                      textAnchor="middle" fontSize={9} fill="#9ca3af"
-                    >
-                      [{m.memory_type || 'unknown'}] {(m.importance ?? 0).toFixed(2)}
-                    </text>
-                  </g>
-                )}
-              </g>
-            );
-          })}
-          {/* Legend */}
-          <g transform="translate(10, 10)">
-            {Object.entries(TYPE_NODE_COLORS).map(([type, color], i) => (
-              <g key={type} transform={`translate(0, ${i * 14})`}>
-                <circle cx={5} cy={5} r={4} fill={color} />
-                <text x={14} y={9} fontSize={9} fill="#6b7280">{type}</text>
-              </g>
-            ))}
-          </g>
-        </svg>
+      <div className="flex-1 relative">
+        <ForceGraph2D
+          ref={graphRef}
+          graphData={graphData}
+          nodeLabel={node => {
+            const m = memoryMap.get(node.id);
+            if (!m) return '';
+            const lines = [
+              m.content.length > 80 ? m.content.slice(0, 80) + '...' : m.content,
+              `[${m.memory_type || 'unknown'}] importance: ${(m.importance ?? 0).toFixed(2)}`,
+              m.created_at ? formatDate(m.created_at) : '',
+            ].filter(Boolean);
+            return lines.join('\n');
+          }}
+          nodeColor={node => {
+            if (hoveredNode) {
+              return linkedIds.has(node.id) ? node.color : 'rgba(200,200,200,0.2)';
+            }
+            return node.color;
+          }}
+          nodeVal={node => node.val}
+          nodeCanvasObjectMode={() => 'replace'}
+          nodeCanvasObject={(node, ctx, globalScale) => {
+            const label = memoryMap.get(node.id)?.content ?? '';
+            const fontSize = 10 / globalScale;
+            ctx.font = `${fontSize}px Sans-Serif`;
+            const textWidth = ctx.measureText(label.length > 20 ? label.slice(0, 20) + '...' : label).width;
+            const bgWidth = textWidth + fontSize;
+            const bgHeight = fontSize * 1.4;
+            const x = node.x ?? 0;
+            const y = node.y ?? 0;
+
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.fillRect(x - bgWidth / 2, y - bgHeight / 2, bgWidth, bgHeight);
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#374151';
+            const truncated = label.length > 20 ? label.slice(0, 20) + '...' : label;
+            ctx.fillText(truncated, x, y);
+          }}
+          linkWidth={link => 0.5 + link.strength * 2}
+          linkColor={() => hoveredNode ? 'rgba(99,102,241,0.3)' : 'rgba(0,0,0,0.08)'}
+          linkDirectionalArrowLength={0}
+          onNodeHover={node => {
+            setHoveredNode(node as GraphNode | null);
+            if (graphRef.current) {
+              graphRef.current.d3Force('charge').strength(node ? -80 : -100);
+            }
+          }}
+          onNodeDragEnd={node => {
+            if (node) {
+              node.fx = node.x;
+              node.fy = node.y;
+            }
+          }}
+          cooldownTicks={100}
+          enableNodeDrag={true}
+          enableZoomInteraction={true}
+          enablePanInteraction={true}
+          d3={{ forceCharge: { strength: -100 }, forceLink: { distance: 60 } }}
+          backgroundColor="#f9fafb"
+        />
       </div>
     </div>
   );
