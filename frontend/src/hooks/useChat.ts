@@ -164,6 +164,9 @@ export function useChat() {
           } else if (data.type === 'error') {
             console.error('SSE error:', data.error);
             setError(data.error || 'Unknown error');
+          } else if (data.type === 'tool_call') {
+            console.log(`[Chat] tool_call: ${data.tool} ${data.status}`, data.display || '');
+            // Future: show tool status indicator in UI
           } else if (data.type === 'done' && !doneHandled) {
             doneHandled = true;
             console.log('[Chat] done event received, content length:', fullContent.length);

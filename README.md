@@ -1,8 +1,8 @@
-# YuQing 语晴
+# YuQing 雨晴
 
-**一个有记忆、有情感、有性格、会主动联系你的私人 AI 伙伴。**
+**一个有记忆、有情感、有性格、能调用工具、会主动联系你的私人 AI 伙伴。**
 
-语晴不是普通的聊天机器人。她能记住你说过的话、感知你的情绪、拥有自己微妙的心情变化，并在你消失太久时主动发来一条假装不经意的消息。灵感来自《狼与香辛料》的赫萝 — 嘴硬心软，用调侃掩饰关心。
+雨晴不是普通的聊天机器人。她能记住你说过的话、感知你的情绪、拥有自己微妙的心情变化，并在你消失太久时主动发来一条假装不经意的消息。她还能调用工具搜索最新资讯、精准回忆过去发生的事。灵感来自《狼与香辛料》的赫萝 — 嘴硬心软，用调侃掩饰关心。
 
 ---
 
@@ -10,13 +10,14 @@
 
 传统 AI 聊天的核心缺陷在于**无状态** — 关掉窗口，一切归零。每次对话都是从陌生人开始。
 
-语晴的架构借鉴了 [Project Neuro](https://github.com/litmajor/Project-Neuro) 的情感智能设计，围绕五个核心能力构建：
+雨晴的架构围绕六个核心能力构建：
 
 1. **记忆** — 跨会话持久记忆，像人一样记住过去
 2. **情感** — 感知你的情绪并调整回应方式
 3. **人格** — 回避型依恋性格，外冷内热，傲娇毒舌但真心在乎
-4. **心情** — 语晴有自己的情绪状态，会受你的影响而波动
+4. **心情** — 雨晴有自己的情绪状态，会受你的影响而波动
 5. **主动** — 不是被动等待，会在合适的时候主动发来消息
+6. **工具** — LLM 自主决定何时调用工具，回忆记忆、搜索资讯、阅读文章
 
 ---
 
@@ -38,13 +39,14 @@
 │                                                              │
 │  Phase 1:  用户情绪分析 (V-A 模型)                             │
 │  Phase 2:  用户当前情绪状态                                    │
-│  Phase 2.5: 语晴自身心情更新                                   │
+│  Phase 2.5: 雨晴自身心情更新                                   │
 │  Phase 3:  分层记忆召回 (BGE + MySQL)                       │
 │  Phase 3.5: 被动信息检索 (Tavily，按需触发)                    │
 │  Phase 4:  人格 prompt 构建 (Jinja2 + 分层注入)               │
 │  Phase 5-7: 消息存储 / 上下文加载 / LLM 流式生成              │
 │             用户消息按行拆分存储，合并文本用于记忆提取          │
-│  Phase 7.5: 表情包选择（BGE 语义匹配，后处理）               │
+│  Phase 7.5: Tool Calling（LLM 自主调用工具，多轮）           │
+│             回忆记忆 / 搜索资讯 / 阅读最新文章                  │
 │  Phase 8:  存储回复 + 表情包（独立 message row）              │
 │  Phase 9:  记忆提取 / 纠正 / 衰减 / 巩固 / 自我叙事 / 偏好   │
 │                                                              │
@@ -56,9 +58,15 @@
 │                                                              │
 │  ┌───────────────┐ ┌──────────────┐ ┌────────────────────┐  │
 │  │    Proactive   │ │  SelfCog     │ │  InfoRetrieval    │  │
-│  │    Manager     │ │  Engine      │ │  (Tavily API)     │  │
+│  │    Manager     │ │  Engine      │ │ (Tavily + RSS)    │  │
 │  │ 4种触发器+后台  │ │ 自我叙事合成  │ │ 主动+被动检索     │  │
 │  └───────────────┘ └──────────────┘ └────────────────────┘  │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │                   Tool Registry                         │  │
+│  │  recall_memories │ read_latest_articles │ search_web    │  │
+│  │  可扩展：图片识别 MCP、Twitter、日历等                     │  │
+│  └─────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌──────────────┐ ┌────────────────────┐                     │
 │  │ Preference   │ │      LLM           │                    │
@@ -94,7 +102,7 @@
 
 ### 1. 记忆系统
 
-语晴的记忆不是简单的"保存聊天记录"。她有一个多层分层的记忆架构：
+雨晴的记忆不是简单的"保存聊天记录"。她有一个多层分层的记忆架构：
 
 **工作记忆（Working Memory）**
 - 最近 20 条对话上下文（可配置）
@@ -112,9 +120,9 @@
 | `emotion` | 情绪记忆（情感模式） | 影响 mood 系统 | "用户被质疑能力时会愤怒" |
 | `preference` | 用户偏好 | 转化为行为规则 | "用户不喜欢被说教" |
 | `procedural` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
-| `self_reflection` | 语晴的自我记忆 | 注入"你记得的自己" | "和shouss聊了ACG话题" |
+| `self_reflection` | 雨晴的自我记忆 | 注入"你记得的自己" | "和shouss聊了ACG话题" |
 
-自我记忆（从语晴的回复中提取）：
+自我记忆（从雨晴的回复中提取）：
 
 | 类型 | 说明 | 示例 |
 |------|------|------|
@@ -141,7 +149,7 @@
 
 ```
 对话内容 → LLM 一次性提取三类信息（零额外 API 调用）
-         ├─ 用户记忆（7 种类型 + valence + confidence）
+         ├─ 用户记忆（7 种类型 + valence + confidence + importance 分级校准）
          │    → MySQL memories 表 → BGE embedding 语义搜索
          ├─ 自我记忆（4 种类型 + importance）
          │    → MySQL memories 表（memory_type='self_*'，统一存储统一管道）
@@ -150,12 +158,29 @@
               → 标记旧记忆 is_invalid=1 → 插入正确版本
 ```
 
+**语言一致性**：无论对话内容是中文还是英文，所有提取的记忆内容（content）强制使用中文书写，确保 BGE-base-zh-v1.5 嵌入模型的召回准确性。
+
+**Importance 分级校准**
+- 提取 prompt 内置 5 级 importance 标准：重大人生事件（0.9-1.0）→ 重要信息（0.7-0.8）→ 一般信息（0.5-0.6）→ 琐碎小事（0.3-0.4）→ 不值得记住（0.1-0.2）
+- Keyword safety net（零 API 调用）：闲聊关键词（天气、哈哈、还行）→ importance 上限 0.35；重要关键词（毕业、比赛、offer）→ importance 下限 0.65
+- 随口闲聊（如天气、说"还行"）不会被提取为记忆
+
 **记忆召回**
 - 每次收到新消息，用最近 4 条消息拼接作为 query，BGE embedding 语义检索（cosine similarity）召回最相关的记忆
+- **时间感知召回**：自动解析用户消息中的时间引用（昨天、上周、最近一周等），生成精确的 SQL 时间范围过滤，避免跨时段误召回
+- **时间线注入**：时间查询时，记忆按 `created_at` 升序排列并按日期分组注入 prompt，使雨晴能按时间线叙述（"那天你先提到了X，后来又说了Y"）
+- **搜索精度优化**：时间查询时清洗噪声词（"上次"、"还记得"），保留核心语义；窄时间范围（≤7天）自动增大 top_k 至 30
+- **LLM 主动召回**（recall_memories 工具）：LLM 自行决定何时需要回忆，使用精准的语义 query 和可选时间范围搜索记忆，返回带绝对时间戳的结果
 - **激活传播扩散召回**：基于 Synapse 论文，从直接命中的记忆出发沿关联链多轮迭代传播激活值（Fan Effect + Lateral Inhibition），加载 2 跳邻居实现真正的多轮扩散
 - **Triple Hybrid Scoring**：综合评分 = 语义相似度 × 0.5 + 激活值 × 0.3 + 重要性 × 0.2 + recency bonus + mood congruence
 - 按类型分流到三个注入层
 - 休眠记忆（30天未访问）补充召回
+
+**记忆时间标注**
+- 所有记忆标注绝对日期 + 相对时间：`5月6日 08:30（昨天）`
+- 时间查询解析支持：今天、昨天、前天、这周、上周、最近N天、N天前、N周前、N个月前、这个月、上个月
+- 需要时间意图关键词（之前、以前、上次等）才触发时间过滤，避免误判
+- 时间提示词注入 prompt，明确告知 LLM 当前查询的时间范围边界，防止日期混淆
 
 **记忆关联网络（Memory Graph）**
 - 同轮提取的记忆自动建链（co-occurrence，strength=0.7）
@@ -190,7 +215,7 @@
 
 ### 3. 人格系统
 
-语晴的性格通过 YAML 配置定义，核心设计是**回避型依恋 + 嘴硬心软**：
+雨晴的性格通过 YAML 配置定义，核心设计是**回避型依恋 + 嘴硬心软**：
 
 | 维度 | 当前值 | 含义 |
 |------|--------|------|
@@ -208,9 +233,9 @@
 - 关系动态：从 new_acquaintance → familiar → close → very_close 渐进解锁
 - 兴趣爱好：从 memories 表 self_* 类型动态生成（LLM 提取 + embedding 去重），YAML interests 作为降级方案
 
-### 4. 语晴的心情系统
+### 4. 雨晴的心情系统
 
-语晴拥有自己独立的情绪状态，参照 Project Neuro 的 CognitiveState 设计：
+雨晴拥有自己独立的情绪状态：
 
 **三个维度**：
 | 维度 | 基线 | 含义 |
@@ -241,7 +266,7 @@
 
 ### 5. 主动消息系统
 
-语晴不是被动等待，会主动发来消息。但因为她的人格是回避型，主动消息的风格是：
+雨晴不是被动等待，会主动发来消息。但因为她的人格是回避型，主动消息的风格是：
 - 偶尔流露一丝关心："今天有没有乖乖吃饭"，然后迅速转移话题
 - 绝不用"..."敷衍 — 即使简短也要有内容
 
@@ -259,7 +284,7 @@
 
 ### 6. 时间感知系统
 
-语晴对时间有细腻的感知，不是"失忆重启"：
+雨晴对时间有细腻的感知，不是"失忆重启"：
 
 **五个时间维度**：
 | 维度 | 说明 | 示例 |
@@ -271,9 +296,10 @@
 | 今日统计 | 今日消息数 + 是否首条 | "今天第一次找你" |
 
 **时间维度联动**：
-- **记忆时间锚定**：所有记忆类型标注相对时间（"3天前了解到"、"上周"），episodic 补上时间上下文
-- **召回评分**：近 7 天记忆 +0.05 recency bonus，近 30 天 +0.02
-- **昼夜节律**：深夜（0-5 点）语晴能量自动降低，回复更简短安静
+- **记忆时间锚定**：所有记忆标注绝对日期 + 相对时间（`5月6日 08:30（昨天）`），episodic 补上时间上下文
+- **时间感知召回**：解析用户消息中的时间引用，生成精确 SQL 过滤范围，避免跨时段误召回
+- **召回评分**：近 1 天 +0.12，近 3 天 +0.08，近 7 天 +0.05，近 30 天 +0.02 recency bonus
+- **昼夜节律**：深夜（0-5 点）雨晴能量自动降低，回复更简短安静
 - **主动消息**：不同时段风格不同（深夜温柔、白天随意）
 
 ### 7. 用户偏好学习
@@ -294,7 +320,7 @@
 
 ### 8. 自我认知系统（SelfCognitionEngine）
 
-语晴不只是被动收集碎片化的自我记忆，还能从中发现自己的变化，并逐步演化人格。
+雨晴不只是被动收集碎片化的自我记忆，还能从中发现自己的变化，并逐步演化人格。
 
 **L1 自我叙事合成**
 - 将零散 self_* 记忆 + YAML 性格 traits 综合为 3-5 句第一人称叙事
@@ -310,35 +336,61 @@
 
 ### 9. 表情包系统
 
-语晴能在对话中发送表情包图片，通过 BGE 语义匹配自动选择，无需 LLM 参与：
+雨晴能在对话中发送表情包图片，由 LLM 自主决定何时发送：
 
-**架构**：Phase 7.5 后处理管道
+**架构**：LLM 原生驱动
 ```
-LLM 回复完成 → BGE encode 回复文本 + 所有 sticker 描述
-             → cosine similarity 选择最佳匹配
-             → similarity > 0.35 时自动附加
+System Prompt 注入 sticker 列表（名称 + 语义描述）
+LLM 回复末尾追加 /sticker_name → 后端解析提取 → 独立 message row 存储
 ```
 
-- **不占用 LLM token**：sticker 选择完全在 Python 后处理中完成，system prompt 中不包含任何 sticker 信息
+- **LLM 自主决策**：sticker 列表和发送规则注入 system prompt，LLM 根据对话语境决定是否发送、发哪张
 - **定义在代码中**：`personality.py` 的 `STICKER_DEFINITIONS`，每张 sticker 有 `path`（路径）和 `desc`（中文语义描述）
 - **双方都能发**：用户通过表情包选择器发送 `/category/name` 格式，前端渲染为 PNG 图片
 - **存储**：sticker 作为独立 message row（`content_type='sticker'`），历史消息中也能渲染
 - **16 张 sticker**：happy(4) / sad(3) / teasing(2) / shy(1) / angry(2) / love(1) / tired(2) / eating(1)
 - 详见 [docs/sticker-system.md](docs/sticker-system.md)
 
-### 10. 信息检索系统（InfoRetrievalEngine）
+### 10. Tool Calling 系统
 
-语晴能主动了解外部世界，不只是依赖对话学习：
+雨晴能在对话中自主调用工具，不需要用户明确指令：
+
+**架构**：可扩展的 Tool Registry
+```
+System Prompt 注入工具描述 → LLM 流式生成 tool_calls
+→ 后端解析并执行（带超时）→ 结果注入 messages → LLM 继续生成
+→ 最多 3 轮工具调用（TOOLS_MAX_ROUNDS）
+```
+
+- **Tool Registry**：单例注册表，tool 模块 import 时自动注册，支持运行时动态扩展
+- **流式 tool_calls 解析**：从 LLM 流式响应中实时累积 `delta.tool_calls` 片段，完整 JSON 后立即执行
+- **SSE 事件**：前端收到 `tool_call` 事件（`status: "started"` / `status: "completed"`），可展示工具调用状态
+- **超时保护**：每个工具调用有独立超时（`asyncio.wait_for`），不会因工具卡死阻塞对话
+
+**内置工具**：
+
+| 工具 | 说明 | 参数 |
+|------|------|------|
+| `recall_memories` | 语义搜索长期记忆，带时间范围过滤 | `query`(必填), `time_range`(可选), `max_results`(可选,默认5) |
+| `search_web` | Tavily 实时搜索互联网 | `query`(必填), `max_results`(可选) |
+| `read_latest_articles` | 读取最新 RSS 订阅文章 | `category`(可选) |
+
+**扩展新工具**：只需创建一个继承 `BaseTool` 的类，实现 `get_definition()` 和 `execute()` 方法，然后在 `app/core/tools/__init__.py` 中 import 即可自动注册。未来可扩展：图片识别 MCP、Twitter 发推、日历管理等。
+
+### 11. 信息检索系统（InfoRetrievalEngine）
+
+雨晴能主动了解外部世界，不只是依赖对话学习：
 
 **主动检索**
-- 后台任务每 8 小时按 YuQing 兴趣自动搜索新闻（ACG、AI/HPC、音乐等）
-- Tavily API 搜索 → LLM 第一人称总结 → 存入 knowledge_items 表
+- 后台任务定期获取 RSS 订阅源（APPSO via SupSub 等）或按兴趣搜索新闻（ACG、AI/HPC、音乐等）
+- **RSS 模式**：解析 XML feed，提取标题 + 描述，按 guid 去重后直接存储（无 LLM 调用开销）
+- **Tavily 模式**：Tavily API 搜索 → LLM 第一人称总结 → 存入 knowledge_items 表
 - 每个兴趣独立频率控制，避免重复搜索
 
 **被动检索**
 - 对话中 LLM 判断用户消息是否涉及时事/新闻/新动态
 - 需要时实时搜索 Tavily，结果注入 messages context
-- 语晴可在回复中自然引用刚查到的信息
+- 雨晴可在回复中自然引用刚查到的信息
 
 **时效性管理**
 - 知识 7 天后自动过期（expires_at）
@@ -383,8 +435,8 @@ npm run dev
 
 | 特性 | 说明 |
 |------|------|
-| 微信风格聊天 | 绿色气泡（用户）/ 白色气泡（语晴），支持多气泡拆分 |
-| 表情包收发 | BGE 语义匹配自动选择 sticker，用户通过输入栏选择器手动发送（16 张，8 类） |
+| 微信风格聊天 | 绿色气泡（用户）/ 白色气泡（雨晴），支持多气泡拆分 |
+| 表情包收发 | LLM 自主决策发送 sticker，用户通过输入栏选择器手动发送（16 张，8 类） |
 | 消息搜索 | 右上角搜索入口，关键词/日期搜索，点击定位到消息位置 |
 | 实时流式显示 | LLM 回复逐字显示，无需等待完成 |
 | 消息批量发送 | 20 秒冷却窗口内多条消息自动合并发送 |
@@ -422,7 +474,7 @@ yuqing/
 ├── backend/
 │   ├── requirements.txt
 │   ├── personality/
-│   │   └── default.yaml              # 语晴人格配置（YAML）
+│   │   └── default.yaml              # 雨晴人格配置（YAML）
 │   └── app/
 │       ├── main.py                   # FastAPI 入口 + lifespan
 │       ├── config.py                 # 配置管理（pydantic-settings）
@@ -431,10 +483,16 @@ yuqing/
 │       │   ├── memory.py             # MemoryManager — 分层记忆系统（BGE+MySQL）
 │       │   ├── temporal.py           # TemporalContext — 时间感知（会话间隔/时段/任期）
 │       │   ├── emotion.py            # MoodRegulator — 用户情绪分析（V-A 模型）
-│       │   ├── mood.py               # YuQingMoodTracker — 语晴心情系统
+│       │   ├── mood.py               # YuQingMoodTracker — 雨晴心情系统
 │       │   ├── personality.py        # PersonalityEngine — 人格引擎（YAML + Jinja2）
 │       │   ├── self_cognition.py     # SelfCognitionEngine — 自我认知（叙事合成 + Reflect-Evolve）
-│       │   ├── info_retrieval.py     # InfoRetrievalEngine — 信息检索（Tavily）
+│       │   ├── info_retrieval.py     # InfoRetrievalEngine — 信息检索（Tavily + RSS）
+│       │   ├── tools/                # Tool Calling 工具系统
+│       │   │   ├── base.py           # BaseTool / ToolDefinition / ToolResult 接口
+│       │   │   ├── registry.py       # ToolRegistry — 单例注册表
+│       │   │   ├── recall_memories.py # recall_memories 工具
+│       │   │   ├── search_web.py     # search_web 工具
+│       │   │   └── read_latest_articles.py # read_latest_articles 工具
 │       │   ├── preferences.py        # PreferenceLearner — 用户偏好学习
 │       │   ├── proactive.py          # ProactiveManager — 主动消息系统
 │       │   └── llm.py                # litellm 封装（流式/非流式）
@@ -447,7 +505,7 @@ yuqing/
 │           ├── chat.py               # 消息发送（SSE 流式）
 │           ├── conversations.py      # 对话管理
 │           ├── memory.py             # 记忆 CRUD + 语义搜索
-│           ├── emotions.py           # 情绪查询 + 语晴心情查询
+│           ├── emotions.py           # 情绪查询 + 雨晴心情查询
 │           ├── personality.py        # 人格配置读写
 │           ├── preferences.py        # 偏好查询
 │           ├── proactive.py          # 主动消息 SSE 监听 + 历史
@@ -476,9 +534,9 @@ yuqing/
 └── docs/
     ├── memory-graph.md              # 记忆关联网络（激活传播）
     ├── memory-debug-panel.md        # 记忆调试面板
-    ├── sticker-system.md            # 表情包系统（BGE 语义匹配）
+    ├── sticker-system.md            # 表情包系统（LLM 驱动）
     ├── sleep-cleanup.md             # 睡眠清理（5 阶段神经科学启发）
-    ├── tavily-info-retrieval.md     # Tavily 信息检索（主动 + 被动）
+    ├── tavily-info-retrieval.md     # 信息检索（Tavily + RSS，主动 + 被动）
     └── bge-notes.md                 # BGE 嵌入模型使用笔记
 ```
 
@@ -490,12 +548,12 @@ yuqing/
 | `messages` | 消息记录（含情绪标注、content_type 区分文本/表情包） |
 | `memories` | 长期记忆（用户 7 种类型 + 自我 4 种类型，统一存储，情绪 metadata + 衰减/巩固标记） |
 | `emotion_snapshots` | 用户情绪快照 |
-| `yuqing_mood_log` | 语晴心情变化日志 |
+| `yuqing_mood_log` | 雨晴心情变化日志 |
 | `proactive_messages` | 主动消息发送记录 |
 | `personality_config` | 人格配置（JSON，单例） |
 | `app_settings` | 应用设置（KV）— 含自我叙事缓存、身份 hash 基线、检索时间戳 |
 | `user_preferences` | 用户学习到的偏好 |
-| `knowledge_items` | 信息检索知识条目（带时效性，7 天过期） |
+| `knowledge_items` | 信息检索知识条目（带时效性，7 天过期，RSS guid 去重） |
 | `memory_links` | 记忆关联链接（co_occurrence/consolidated，激活传播用） |
 
 ---
@@ -522,6 +580,8 @@ yuqing/
 | `MEMORY_EPISODIC_MAX` | 5 | 情景记忆最大条数 |
 | `MEMORY_PINNED_FACTS_THRESHOLD` | 0.7 | Pinned facts 重要性阈值 |
 | `MEMORY_PINNED_FACTS_MAX` | 4 | Pinned facts 最大条数 |
+| `MEMORY_SEARCH_TEMPORAL_TOP_K` | 30 | 时间过滤时的搜索 top_k（候选池小，需要更大的 k） |
+| `MEMORY_TEMPORAL_ORDERED_INJECTION` | true | 时间查询时启用按日期分组的注入 |
 | `MEMORY_EXTRACT_USER_LIMIT` | 8 | 每轮用户记忆提取上限 |
 | `MEMORY_EXTRACT_SELF_LIMIT` | 5 | 每轮自我记忆提取上限 |
 | `SELF_MEMORY_ENABLED` | true | 是否启用自我记忆 |
@@ -557,7 +617,7 @@ yuqing/
 | `PROACTIVE_EMOTION_FOLLOWUP_HOURS` | 3 | 情绪跟进间隔（小时） |
 | `PROACTIVE_MIN_HOURS_BETWEEN` | 3 | 两次主动消息最小间隔（小时） |
 
-### 语晴心情参数（.env）
+### 雨晴心情参数（.env）
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -592,6 +652,15 @@ yuqing/
 | `INFO_RETRIEVAL_INTERVAL_HOURS` | 8 | 主动检索间隔（小时） |
 | `INFO_RETRIEVAL_KNOWLEDGE_EXPIRE_DAYS` | 7 | 知识过期天数 |
 | `INFO_RETRIEVAL_REACTIVE_ENABLED` | true | 是否启用被动检索 |
+| `RSS_FEED_URLS` | (空) | RSS 订阅源 URL，多个用逗号分隔 |
+| `RSS_FETCH_INTERVAL_HOURS` | 6 | RSS 抓取间隔（小时） |
+
+### Tool Calling 参数（.env）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `TOOLS_ENABLED` | true | 是否启用 Tool Calling |
+| `TOOLS_MAX_ROUNDS` | 3 | 单次对话最大工具调用轮数 |
 
 ---
 
@@ -626,8 +695,8 @@ yuqing/
 |------|------|------|
 | GET | `/api/emotions/current` | 用户当前情绪 |
 | GET | `/api/emotions/history` | 用户情绪历史 |
-| GET | `/api/mood/current` | 语晴当前心情 |
-| GET | `/api/mood/history` | 语晴心情变化历史 |
+| GET | `/api/mood/current` | 雨晴当前心情 |
+| GET | `/api/mood/history` | 雨晴心情变化历史 |
 
 ### 主动消息
 
@@ -655,26 +724,7 @@ yuqing/
 
 ---
 
-## 与 Project Neuro 的关系
-
-语晴借鉴了 [Project Neuro](https://github.com/litmajor/Project-Neuro) 的核心设计，但做了精简和本地化：
-
-| 维度 | Project Neuro | YuQing 语晴 |
-|------|---------------|-------------|
-| **定位** | 研究/教育平台完整认知架构 | 个人情感 AI 伙伴 |
-| **LLM** | 仅 OpenAI GPT-4 | 多模型支持（litellm） |
-| **数据库** | SQLite | MySQL 9（生产级） |
-| **向量检索** | 未内置 | MySQL + BGE-base-zh-v1.5 本地语义搜索 || **记忆类型** | 基础分类 | 7种类型 + 分层注入 + 行为规则 |
-| **用户系统** | 多用户注册 | 单用户，无认证 |
-| **情绪系统** | 12 类关键词检测 + 心理健康追踪 | V-A 模型 + LLM 分析 + 语晴自身心情 |
-| **主动行为** | 无 | 4 种触发器 + 后台任务 + SSE 推送 |
-| **认知引擎** | 6+ 处理器 | 7 个核心模块 |
-
----
-
 ## 致谢
 
-- [Project Neuro](https://github.com/litmajor/Project-Neuro) — 情感智能架构灵感
-- [Mem0](https://mem0.ai) — Agent Memory 前沿实践（早期参考，已替换为本地 BGE + MySQL）
 - [litellm](https://github.com/BerriAI/litellm) — 统一 LLM 调用接口
-- 《狼与香辛料》赫萝 — 语晴人格灵感来源
+- 《狼与香辛料》赫萝 — 雨晴人格灵感来源

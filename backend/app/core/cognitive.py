@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Optional
 
 import aiomysql
 
-from app.core.llm import stream_completion
+from app.core.llm import stream_completion, stream_with_tools
 from app.core.memory import memory_manager
 from app.core.emotion import mood_regulator
 from app.core.mood import yuqing_mood_tracker
@@ -174,14 +174,97 @@ class CognitiveProcessor:
                 continue
             messages.append({"role": row["role"], "content": row["content"]})
 
-        # --- Phase 7: Stream LLM response ---
+        # --- Phase 7: Stream LLM response (with tool calling support) ---
         assistant_msg_id = secrets.token_hex(16)
         full_response = ""
 
+        # Load tool schemas if enabled
+        tools_schemas = []
+        if settings.TOOLS_ENABLED:
+            try:
+                from app.core.tools.registry import tool_registry
+                tools_schemas = tool_registry.get_all_definitions()
+            except Exception as e:
+                logger.debug(f"Tool loading failed: {e}")
+
+        has_tools = len(tools_schemas) > 0
+        max_tool_rounds = settings.TOOLS_MAX_ROUNDS if has_tools else 0
+        tool_round = 0
+
         try:
-            async for chunk in stream_completion(messages):
-                full_response += chunk
-                yield {"event": "token", "data": json.dumps({"type": "token", "content": chunk}, ensure_ascii=True)}
+            while tool_round <= max_tool_rounds:
+                tool_round += 1
+                tool_calls_collected = []
+
+                if has_tools and tool_round <= max_tool_rounds:
+                    # Use tool-aware streaming
+                    async for event in stream_with_tools(
+                        messages,
+                        tools=tools_schemas,
+                    ):
+                        if event.type == "content":
+                            full_response += event.content
+                            yield {"event": "token", "data": json.dumps({"type": "token", "content": event.content}, ensure_ascii=True)}
+                        elif event.type == "tool_call_start":
+                            yield {"event": "tool_call", "data": json.dumps({
+                                "type": "tool_call", "status": "started", "tool": event.tool_name,
+                            }, ensure_ascii=True)}
+                        elif event.type == "tool_call_end":
+                            tool_calls_collected.append({
+                                "id": event.tool_call_id,
+                                "name": event.tool_name,
+                                "arguments_json": event.arguments_json,
+                            })
+                else:
+                    # Fallback: plain streaming (no tools or max rounds reached)
+                    async for chunk in stream_completion(messages):
+                        full_response += chunk
+                        yield {"event": "token", "data": json.dumps({"type": "token", "content": chunk}, ensure_ascii=True)}
+
+                # No tool calls → done
+                if not tool_calls_collected:
+                    break
+
+                # Execute tool calls and build response messages
+                for tc in tool_calls_collected:
+                    tool_name = tc["name"]
+                    try:
+                        arguments = json.loads(tc["arguments_json"]) if tc["arguments_json"] else {}
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                    logger.info(f"Tool call: {tool_name}({arguments})")
+                    result = await tool_registry.execute_tool(tool_name, arguments)
+
+                    yield {"event": "tool_call", "data": json.dumps({
+                        "type": "tool_call", "status": "completed",
+                        "tool": tool_name, "display": result.display,
+                        "success": result.success,
+                    }, ensure_ascii=True)}
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result.content,
+                    })
+
+                # Append assistant message with tool_calls (OpenAI format requirement)
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response if full_response else None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
+                        }
+                        for tc in tool_calls_collected
+                    ],
+                })
+
+                # Reset for continuation stream
+                full_response = ""
+
         except Exception as e:
             logger.error(f"LLM stream error: {e}")
             yield {"event": "error", "data": json.dumps({"type": "error", "error": str(e)}, ensure_ascii=True)}

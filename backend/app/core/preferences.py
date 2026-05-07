@@ -87,7 +87,7 @@ class PreferenceLearner:
             return {}
 
         conversation_text = "\n".join(
-            f"{'用户' if r['role'] == 'user' else '语晴'}: {r['content'][:200]}"
+            f"{'用户' if r['role'] == 'user' else '雨晴'}: {r['content'][:200]}"
             for r in reversed(rows)
         )
 

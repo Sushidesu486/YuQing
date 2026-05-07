@@ -151,6 +151,14 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load knowledge: {e}")
 
+        # Load tool descriptions for system prompt
+        tool_descriptions = None
+        try:
+            from app.core.tools.registry import tool_registry
+            tool_descriptions = tool_registry.get_tool_descriptions_prompt(language=language)
+        except Exception as e:
+            logger.debug(f"Failed to load tool descriptions: {e}")
+
         try:
             template = self._env.get_template(template_name)
         except Exception:
@@ -170,6 +178,7 @@ class PersonalityEngine:
                 {"name": s["path"].split("/")[-1], "desc": s["desc"]}
                 for s in STICKER_DEFINITIONS
             ],
+            tool_descriptions=tool_descriptions,
         )
 
 

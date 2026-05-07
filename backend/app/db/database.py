@@ -320,6 +320,22 @@ async def init_db():
             except Exception as e:
                 logger.warning(f"content_type migration skipped: {e}")
 
+            # Migration: add guid to knowledge_items (RSS dedup)
+            try:
+                await cur.execute("DESCRIBE knowledge_items")
+                ki_columns = {row[0] for row in await cur.fetchall()}
+                if "guid" not in ki_columns:
+                    await cur.execute(
+                        "ALTER TABLE knowledge_items ADD COLUMN "
+                        "guid VARCHAR(128) DEFAULT NULL AFTER source_type"
+                    )
+                    await cur.execute(
+                        "CREATE INDEX idx_guid ON knowledge_items (guid)"
+                    )
+                    logger.info("Migration: added column knowledge_items.guid")
+            except Exception as e:
+                logger.warning(f"guid migration skipped: {e}")
+
     logger.info("Database tables initialized")
 
 

@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
-import json
 import logging
+import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -13,6 +14,81 @@ from app.db.database import get_pool, _generate_id
 from app.core.llm import generate_completion
 
 logger = logging.getLogger(__name__)
+
+# ── RSS feed ──
+
+# Namespace for <content:encoded>
+_CONTENT_NS = {"content": "http://purl.org/rss/1.0/modules/content/"}
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and decode common entities."""
+    clean = re.sub(r"<[^>]+>", "", text)
+    for entity, char in [
+        ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ("&quot;", '"'), ("&#39;", "'"), ("&nbsp;", " "),
+    ]:
+        clean = clean.replace(entity, char)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+async def _fetch_rss_feed(feed_url: str) -> list:
+    """Fetch and parse an RSS feed. Returns list of item dicts."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                feed_url,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"RSS fetch error {resp.status}: {feed_url}")
+                    return []
+                text = await resp.text()
+
+        root = ET.fromstring(text)
+        items = []
+
+        for item in root.findall(".//item"):
+            title = item.findtext("title", "").strip()
+            link = item.findtext("link", "").strip()
+            guid = item.findtext("guid", "").strip()
+            pub_date = item.findtext("pubDate", "").strip()
+            description = item.findtext("description", "").strip()
+            author = item.findtext("author", "").strip()
+
+            # <content:encoded> with namespace
+            content_elem = item.find("content:encoded", _CONTENT_NS)
+            full_content = (
+                content_elem.text.strip()
+                if content_elem is not None and content_elem.text
+                else ""
+            )
+
+            # <tag> elements (SupSub format)
+            tags = [t.text.strip() for t in item.findall("tag") if t.text]
+
+            if not title or not guid:
+                continue
+
+            items.append(
+                {
+                    "title": title,
+                    "link": link,
+                    "guid": guid,
+                    "pub_date": pub_date,
+                    "description": _strip_html(description),
+                    "full_content": _strip_html(full_content),
+                    "author": author,
+                    "tags": tags,
+                }
+            )
+
+        return items
+    except Exception as e:
+        logger.warning(f"RSS fetch/parse failed for {feed_url}: {e}")
+        return []
+
 
 # ── Tavily search ──
 
@@ -47,13 +123,6 @@ async def _tavily_search(query: str, max_results: int = 3) -> list:
 
 # ── Prompts ──
 
-_PROACTIVE_SUMMARY_PROMPT_ZH = """以下是关于「{topic}」的最新搜索结果：
-{search_results}
-
-请用2-3句话总结这些信息中有趣的部分，用中文写。
-以语晴的第一人称视角，像是她看到了这些信息后的感想。
-只返回总结文本，不要其他格式。"""
-
 _SHOULD_SEARCH_PROMPT_ZH = """判断以下用户消息是否需要搜索最新信息才能回答。
 如果涉及：新闻、时事、最新发布、近期事件、具体产品/作品的新动态
 返回搜索关键词（5-20字），不要加引号。
@@ -64,13 +133,13 @@ _SHOULD_SEARCH_PROMPT_ZH = """判断以下用户消息是否需要搜索最新�
 _REACTIVE_SUMMARY_PROMPT_ZH = """以下是关于「{query}」的搜索结果：
 {search_results}
 
-请用2-3句话总结最相关的信息，用中文写。
-以语晴的视角，像她刚刚查到了这些信息。
+请用2-3句话提取最关键的事实信息，用中文写。
+只陈述事实，不要加个人感想或评论。
 只返回总结文本，不要其他格式。"""
 
 
 class InfoRetrievalEngine:
-    """信息检索引擎：主动搜索 + 被动搜索，结果存入 knowledge_items 表。"""
+    """信息检索引擎：RSS 主动抓取 + Tavily 按需搜索，结果存入 knowledge_items 表。"""
 
     async def get_recent_knowledge(self, limit: int = 5) -> list:
         """获取未过期的知识条目，用于注入 system prompt。"""
@@ -91,105 +160,110 @@ class InfoRetrievalEngine:
                         days = (datetime.utcnow() - retrieved).total_seconds() / 86400
                     else:
                         days = 0
-                    relative = "今天" if days < 1 else (
-                        "昨天" if days < 2 else f"{int(days)}天前"
+                    relative = (
+                        "今天" if days < 1
+                        else "昨天" if days < 2
+                        else f"{int(days)}天前"
                     )
-                    results.append({
-                        "topic": row["topic"],
-                        "content": row["content"],
-                        "retrieved_at_relative": relative,
-                    })
+                    results.append(
+                        {
+                            "topic": row["topic"],
+                            "content": row["content"],
+                            "retrieved_at_relative": relative,
+                        }
+                    )
         return results
 
     async def proactive_retrieval(self):
-        """按 YuQing 兴趣主动搜索新闻，LLM 总结后存储。"""
-        from app.core.personality import personality_engine
+        """从 RSS feeds 抓取新文章，去重后存储为知识条目。
 
-        personality = personality_engine.get_personality()
-        interests = personality.get("interests", [])
-        if not interests:
-            logger.debug("No interests configured, skipping proactive retrieval")
+        去重策略：每个 feed 记录最新已处理的 guid，
+        处理时从最新条目开始，遇到已知 guid 停止。
+        """
+        feed_urls = [
+            u.strip() for u in settings.RSS_FEED_URLS.split(",") if u.strip()
+        ]
+        if not feed_urls:
+            logger.debug("No RSS feeds configured, skipping proactive retrieval")
             return
 
         pool = await get_pool()
 
-        for interest in interests:
-            # Check last retrieval time for this topic
-            topic_key = f"info_retrieval_{hashlib.md5(interest.encode()).hexdigest()}"
+        for feed_url in feed_urls:
+            # Get last processed guid for this feed
+            feed_key = f"rss_last_guid_{hashlib.md5(feed_url.encode()).hexdigest()}"
+            last_guid = None
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "SELECT value FROM app_settings WHERE `key` = %s",
-                        (topic_key,),
+                        (feed_key,),
                     )
                     row = await cur.fetchone()
+                    if row and row[0]:
+                        last_guid = row[0]
 
-            if row and row[0]:
-                try:
-                    last_time = datetime.fromisoformat(row[0])
-                    hours_since = (datetime.utcnow() - last_time).total_seconds() / 3600
-                    if hours_since < settings.INFO_RETRIEVAL_INTERVAL_HOURS:
-                        logger.debug(f"Skipping topic '{interest}': retrieved {hours_since:.0f}h ago")
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            # Generate search query from interest
-            # Extract key topic from interest string (e.g. "ACG 文化 — 但有..." → "ACG 文化 最新资讯")
-            topic_name = interest.split("—")[0].split("—")[0].split("（")[0].strip()
-            if len(topic_name) > 20:
-                topic_name = topic_name[:20]
-            search_query = f"{topic_name} 最新资讯"
-
-            # Search
-            results = await _tavily_search(search_query, max_results=3)
-            if not results:
-                logger.debug(f"No Tavily results for: {search_query}")
+            # Fetch RSS
+            items = await _fetch_rss_feed(feed_url)
+            if not items:
                 continue
 
-            # Summarize via LLM
-            search_text = "\n".join(
-                f"[{r.get('title', '')}] {r.get('content', '')}\n来源: {r.get('url', '')}"
-                for r in results
-            )
-            prompt = _PROACTIVE_SUMMARY_PROMPT_ZH.format(
-                topic=topic_name,
-                search_results=search_text,
-            )
-            try:
-                summary = await generate_completion(
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
+            new_count = 0
+            # Process items from newest to oldest, stop at known guid
+            for item in items:
+                if item["guid"] == last_guid:
+                    break
+
+                # Use description as content (already a factual summary from RSS)
+                content = item["description"] or item["full_content"]
+                if not content or len(content) < 20:
+                    content = item["title"]
+                # Truncate very long content
+                if len(content) > 500:
+                    content = content[:500].rsplit(" ", 1)[0] + "..."
+
+                # Topic from tags, or title first 50 chars
+                topic = (
+                    ", ".join(item["tags"][:2])
+                    if item["tags"]
+                    else item["title"][:50]
                 )
-            except Exception as e:
-                logger.warning(f"Proactive summary LLM failed for '{topic_name}': {e}")
-                continue
 
-            summary = summary.strip()
-            if not summary or len(summary) < 10:
-                continue
+                # Check dedup by guid in knowledge_items
+                try:
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                "SELECT 1 FROM knowledge_items WHERE guid = %s",
+                                (item["guid"],),
+                            )
+                            if await cur.fetchone():
+                                continue  # Already stored
+                except Exception:
+                    pass  # guid column might not exist yet, skip dedup check
 
-            # Get first source URL
-            source_url = results[0].get("url", "") if results else None
+                await self._store_knowledge(
+                    topic=topic,
+                    content=content,
+                    source_url=item["link"] or None,
+                    source_type="proactive",
+                    guid=item["guid"],
+                )
+                new_count += 1
 
-            # Store
-            await self._store_knowledge(
-                topic=topic_name,
-                content=summary,
-                source_url=source_url or None,
-                source_type="proactive",
-            )
+            # Update last guid to the newest item
+            if items and (new_count > 0 or not last_guid):
+                newest_guid = items[0]["guid"]
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "INSERT INTO app_settings (`key`, value) VALUES (%s, %s) "
+                            "ON DUPLICATE KEY UPDATE value = %s",
+                            (feed_key, newest_guid, newest_guid),
+                        )
 
-            # Update last retrieval time
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "INSERT INTO app_settings (`key`, value) VALUES (%s, %s) "
-                        "ON DUPLICATE KEY UPDATE value = %s",
-                        (topic_key, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()),
-                    )
-
-            logger.info(f"Proactive retrieval: '{topic_name}' → {summary[:60]}...")
+            if new_count > 0:
+                logger.info(f"RSS '{feed_url}': {new_count} new items stored")
 
     async def reactive_retrieval(
         self, conversation_id: str, user_message: str
@@ -203,7 +277,7 @@ class InfoRetrievalEngine:
         if not results:
             return []
 
-        # Summarize
+        # Summarize as factual information (no personal reflections)
         search_text = "\n".join(
             f"[{r.get('title', '')}] {r.get('content', '')}"
             for r in results
@@ -219,7 +293,6 @@ class InfoRetrievalEngine:
             )
         except Exception as e:
             logger.warning(f"Reactive summary LLM failed: {e}")
-            # Return raw results as fallback
             return [{"content": search_text[:500], "topic": query}]
 
         summary = summary.strip()
@@ -261,6 +334,7 @@ class InfoRetrievalEngine:
         content: str,
         source_url: Optional[str],
         source_type: str,
+        guid: Optional[str] = None,
     ):
         """存储知识条目。"""
         expires_at = datetime.utcnow() + timedelta(
@@ -270,28 +344,51 @@ class InfoRetrievalEngine:
         mem_id = _generate_id()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(
-                    "INSERT INTO knowledge_items "
-                    "(id, topic, content, source_url, retrieved_at, expires_at, source_type) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (mem_id, topic, content, source_url, datetime.utcnow(),
-                     expires_at, source_type),
-                )
+                # Try with guid column (may not exist in older DBs)
+                try:
+                    await cur.execute(
+                        "INSERT INTO knowledge_items "
+                        "(id, topic, content, source_url, retrieved_at, expires_at, source_type, guid) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            mem_id, topic, content, source_url, datetime.utcnow(),
+                            expires_at, source_type, guid,
+                        ),
+                    )
+                except aiomysql.ProgrammingError:
+                    # guid column doesn't exist yet, insert without it
+                    await cur.execute(
+                        "INSERT INTO knowledge_items "
+                        "(id, topic, content, source_url, retrieved_at, expires_at, source_type) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            mem_id, topic, content, source_url, datetime.utcnow(),
+                            expires_at, source_type,
+                        ),
+                    )
 
 
 # ── Background task ──
 
 async def info_retrieval_background_task():
-    """后台循环，定期执行主动检索。"""
+    """后台循环，定期执行 RSS 抓取。"""
     # Wait 5 minutes after startup before first retrieval
     await asyncio.sleep(300)
 
+    # Determine interval: use RSS interval if RSS feeds configured, else Tavily interval
+    feed_urls = [u.strip() for u in settings.RSS_FEED_URLS.split(",") if u.strip()]
+    interval_hours = (
+        settings.RSS_FETCH_INTERVAL_HOURS
+        if feed_urls
+        else settings.INFO_RETRIEVAL_INTERVAL_HOURS
+    )
+
     while True:
         try:
-            if settings.INFO_RETRIEVAL_ENABLED and settings.TAVILY_API_KEY:
+            if settings.INFO_RETRIEVAL_ENABLED:
                 engine = InfoRetrievalEngine()
                 await engine.proactive_retrieval()
         except Exception as e:
             logger.error(f"Info retrieval background task failed: {e}")
 
-        await asyncio.sleep(settings.INFO_RETRIEVAL_INTERVAL_HOURS * 3600)
+        await asyncio.sleep(interval_hours * 3600)

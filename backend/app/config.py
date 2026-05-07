@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     MEMORY_EPISODIC_MAX: int = 5
     MEMORY_PINNED_FACTS_THRESHOLD: float = 0.7
     MEMORY_PINNED_FACTS_MAX: int = 4
+    MEMORY_SEARCH_TEMPORAL_TOP_K: int = 30
+    MEMORY_TEMPORAL_ORDERED_INJECTION: bool = True
     SELF_MEMORY_ENABLED: bool = True
     MEMORY_CLASSIFY_ENABLED: bool = True
 
@@ -111,12 +113,20 @@ class Settings(BaseSettings):
     # Embedding model (local BGE for semantic search)
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
 
-    # Information retrieval (Tavily)
+    # Tool calling
+    TOOLS_ENABLED: bool = True
+    TOOLS_MAX_ROUNDS: int = 3
+
+    # Information retrieval
     TAVILY_API_KEY: str = ""
     INFO_RETRIEVAL_ENABLED: bool = True
     INFO_RETRIEVAL_INTERVAL_HOURS: int = 8       # check every 8 hours
     INFO_RETRIEVAL_KNOWLEDGE_EXPIRE_DAYS: int = 7  # knowledge expires after 7 days
     INFO_RETRIEVAL_REACTIVE_ENABLED: bool = True   # reactive search on demand
+
+    # RSS feeds (proactive knowledge — e.g. WeChat public accounts via SupSub)
+    RSS_FEED_URLS: str = ""  # comma-separated RSS feed URLs
+    RSS_FETCH_INTERVAL_HOURS: int = 6             # RSS feeds update 1-3 times/day
 
     # Memory graph — Activation propagation (based on Synapse et al.)
     MEMORY_LINK_ENABLED: bool = True
