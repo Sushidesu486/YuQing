@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
     await init_db()
     _get_embedding_model()  # Pre-load embedding model
 
+    # Enable litellm local response cache (for deterministic calls like emotion analysis)
+    import litellm
+    litellm.enable_cache(type="local", supported_call_types=["acompletion"])
+
     # Compute identity hash baseline on first startup (async, non-blocking)
     asyncio.create_task(_init_identity_baseline())
 

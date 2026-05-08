@@ -44,6 +44,23 @@ class CognitiveProcessor:
         # --- Phase 2: Get current mood ---
         current_mood = await mood_regulator.get_current_mood(conversation_id)
 
+        # --- Phase 2.1: Get user emotion trajectory ---
+        emotion_trajectory = None
+        try:
+            emotion_trajectory = await mood_regulator.get_emotion_trajectory(conversation_id)
+        except Exception as e:
+            logger.debug(f"Emotion trajectory failed: {e}")
+
+        # --- Phase 2.15: Get user emotion profile (cross-session) ---
+        emotion_profile = None
+        try:
+            emotion_profile = await mood_regulator.get_emotion_profile()
+            # Trigger background update if enough new snapshots
+            if await mood_regulator.should_update_profile(conversation_id):
+                asyncio.create_task(mood_regulator.update_emotion_profile())
+        except Exception as e:
+            logger.debug(f"Emotion profile failed: {e}")
+
         # --- Phase 2.2: Compute temporal context ---
         temporal_context = None
         if settings.TEMPORAL_ENABLED:
@@ -97,13 +114,18 @@ class CognitiveProcessor:
         # Touch all recalled memories (update access time)
         all_recalled = (
             layered_memory.get("facts", []) +
-            layered_memory.get("events", [])
+            layered_memory.get("events", []) +
+            layered_memory.get("episodic", []) +
+            layered_memory.get("emotion_influences", [])
         )
         for mem in all_recalled:
+            mem_id = mem.get("id")
+            if not mem_id:
+                continue
             try:
-                await memory_manager.touch_memory(mem["id"])
+                await memory_manager.touch_memory(mem_id)
             except Exception as e:
-                logger.debug(f"Failed to touch memory {mem.get('id')}: {e}")
+                logger.debug(f"Failed to touch memory {mem_id}: {e}")
 
         # --- Phase 3.5: Reactive info retrieval ---
         reactive_knowledge = None
@@ -122,13 +144,15 @@ class CognitiveProcessor:
             except Exception as e:
                 logger.debug(f"Reactive retrieval skipped: {e}")
 
-        # --- Phase 4: Build system prompt ---
-        system_prompt = await personality_engine.build_system_prompt(
+        # --- Phase 4: Build system prompts (split for prefix cache) ---
+        stable_prompt, dynamic_prompt = await personality_engine.build_system_prompts(
             language=language,
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
             recalled_memories=layered_memory,
             yuqing_mood=yuqing_mood,
             temporal_context=temporal_context,
+            emotion_trajectory=emotion_trajectory,
+            emotion_profile=emotion_profile,
         )
 
         # --- Phase 5: Store user message(s) (split batched messages) ---
@@ -147,6 +171,8 @@ class CognitiveProcessor:
                     )
 
         # --- Phase 6: Load recent messages for context (includes the just-stored user message) ---
+        # Merge split prompts into one system message (multiple system messages break some LLM APIs)
+        system_prompt = stable_prompt + "\n\n" + dynamic_prompt
         messages = [{"role": "system", "content": system_prompt}]
 
         # Inject reactive knowledge as system context

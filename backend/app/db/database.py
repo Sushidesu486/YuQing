@@ -336,6 +336,25 @@ async def init_db():
             except Exception as e:
                 logger.warning(f"guid migration skipped: {e}")
 
+            # Migration: add recall_count and last_recalled to memory_links (S2 dynamic strength)
+            try:
+                await cur.execute("DESCRIBE memory_links")
+                ml_columns = {row[0] for row in await cur.fetchall()}
+                if "recall_count" not in ml_columns:
+                    await cur.execute(
+                        "ALTER TABLE memory_links ADD COLUMN "
+                        "recall_count INT NOT NULL DEFAULT 0 AFTER strength"
+                    )
+                    logger.info("Migration: added column memory_links.recall_count")
+                if "last_recalled" not in ml_columns:
+                    await cur.execute(
+                        "ALTER TABLE memory_links ADD COLUMN "
+                        "last_recalled DATETIME DEFAULT NULL AFTER recall_count"
+                    )
+                    logger.info("Migration: added column memory_links.last_recalled")
+            except Exception as e:
+                logger.warning(f"memory_links recall migration skipped: {e}")
+
     logger.info("Database tables initialized")
 
 

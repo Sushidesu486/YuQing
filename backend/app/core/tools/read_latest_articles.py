@@ -2,7 +2,7 @@ import logging
 
 from app.core.tools.base import BaseTool, ToolDefinition, ToolParameter, ToolResult
 from app.core.tools.registry import tool_registry
-from app.core.info_retrieval import _fetch_rss_feed
+from app.core.info_retrieval import _fetch_rss_feed, InfoRetrievalEngine
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,35 @@ class ReadLatestArticlesTool(BaseTool):
                 content="目前没有新文章。",
                 display="检查了 RSS 订阅源，暂时没有新文章。",
             )
+
+        # Store fetched items into knowledge_items for future search
+        engine = InfoRetrievalEngine()
+        stored_count = 0
+        for item in all_items[:max_articles]:
+            content = item["description"] or item["full_content"]
+            if not content or len(content) < 20:
+                content = item["title"]
+            if len(content) > 500:
+                content = content[:500].rsplit(" ", 1)[0] + "..."
+            topic = (
+                ", ".join(item["tags"][:2])
+                if item["tags"]
+                else item["title"][:50]
+            )
+            try:
+                await engine._store_knowledge(
+                    topic=topic,
+                    content=content,
+                    source_url=item["link"] or None,
+                    source_type="proactive",
+                    guid=item["guid"],
+                )
+                stored_count += 1
+            except Exception as e:
+                logger.debug(f"Failed to store RSS item: {e}")
+
+        if stored_count > 0:
+            logger.info(f"read_latest_articles: stored {stored_count} items to knowledge_items")
 
         article_lines = []
         for i, item in enumerate(all_items[:max_articles], 1):

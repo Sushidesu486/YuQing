@@ -108,18 +108,24 @@ class PersonalityEngine:
                 )
         return self.get_personality()
 
-    async def build_system_prompt(
+    async def build_system_prompts(
         self,
         language: str = "zh",
         current_mood: Optional[dict] = None,
         recalled_memories: Optional[dict] = None,
         yuqing_mood: Optional[dict] = None,
         temporal_context: Optional[object] = None,
-    ) -> str:
-        personality = self.get_personality()
-        template_name = f"system_{language}.txt.j2"
+        emotion_trajectory: Optional[dict] = None,
+        emotion_profile: Optional[dict] = None,
+    ) -> tuple[str, str]:
+        """Build split system prompts: (stable, dynamic) for prefix cache optimization.
 
-        # Load learned user preferences
+        Stable prompt contains personality/backstory/rules (rarely changes).
+        Dynamic prompt contains memories/mood/time (changes every request).
+        """
+        personality = self.get_personality()
+
+        # Load shared data
         preference_hints = None
         try:
             prefs = await preference_learner.get_all_preferences()
@@ -134,7 +140,6 @@ class PersonalityEngine:
             logger.debug(f"Failed to load self memories: {e}")
             self_memories = None
 
-        # Load self-narrative (synthesized self-cognition)
         self_narrative = None
         try:
             from app.core.self_cognition import self_cognition_engine
@@ -142,7 +147,6 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load self narrative: {e}")
 
-        # Load recent knowledge (from info retrieval)
         recent_knowledge = None
         try:
             from app.core.info_retrieval import InfoRetrievalEngine
@@ -151,7 +155,6 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load knowledge: {e}")
 
-        # Load tool descriptions for system prompt
         tool_descriptions = None
         try:
             from app.core.tools.registry import tool_registry
@@ -159,12 +162,27 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load tool descriptions: {e}")
 
-        try:
-            template = self._env.get_template(template_name)
-        except Exception:
-            template = self._env.get_template("system_zh.txt.j2")
+        stickers = [
+            {"name": s["path"].split("/")[-1], "desc": s["desc"]}
+            for s in STICKER_DEFINITIONS
+        ]
 
-        return template.render(
+        # Stable prompt: personality, backstory, rules (cacheable prefix)
+        try:
+            stable_template = self._env.get_template(f"system_{language}_stable.txt.j2")
+        except Exception:
+            stable_template = self._env.get_template("system_zh_stable.txt.j2")
+        stable_prompt = stable_template.render(
+            personality=personality,
+            stickers=stickers,
+        )
+
+        # Dynamic prompt: memories, mood, time, tools (changes every request)
+        try:
+            dynamic_template = self._env.get_template(f"system_{language}_dynamic.txt.j2")
+        except Exception:
+            dynamic_template = self._env.get_template("system_zh_dynamic.txt.j2")
+        dynamic_prompt = dynamic_template.render(
             personality=personality,
             current_mood=current_mood,
             recalled_memories=recalled_memories or {},
@@ -174,12 +192,30 @@ class PersonalityEngine:
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
             temporal_context=temporal_context,
-            stickers=[
-                {"name": s["path"].split("/")[-1], "desc": s["desc"]}
-                for s in STICKER_DEFINITIONS
-            ],
             tool_descriptions=tool_descriptions,
+            emotion_trajectory=emotion_trajectory,
+            emotion_profile=emotion_profile,
         )
+
+        return stable_prompt, dynamic_prompt
+
+    async def build_system_prompt(
+        self,
+        language: str = "zh",
+        current_mood: Optional[dict] = None,
+        recalled_memories: Optional[dict] = None,
+        yuqing_mood: Optional[dict] = None,
+        temporal_context: Optional[object] = None,
+    ) -> str:
+        """Build a single combined system prompt. For backward compatibility."""
+        stable, dynamic = await self.build_system_prompts(
+            language=language,
+            current_mood=current_mood,
+            recalled_memories=recalled_memories,
+            yuqing_mood=yuqing_mood,
+            temporal_context=temporal_context,
+        )
+        return stable + "\n\n" + dynamic
 
 
 personality_engine = PersonalityEngine()

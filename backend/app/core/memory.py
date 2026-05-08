@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import math
@@ -6,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import aiomysql
+import numpy as np
 
 from app.config import settings
 from app.db.database import get_pool, _generate_id
@@ -204,14 +206,28 @@ def _get_embedding_model():
     return _embedding_model
 
 
-def _cosine_similarity(a: list, b: list) -> float:
-    """Compute cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
+def _cosine_similarity(a, b) -> float:
+    """Compute cosine similarity between two vectors (NumPy)."""
+    a_arr = np.asarray(a, dtype=np.float32)
+    b_arr = np.asarray(b, dtype=np.float32)
+    dot = np.dot(a_arr, b_arr)
+    norm_a = np.linalg.norm(a_arr)
+    norm_b = np.linalg.norm(b_arr)
     if norm_a == 0 or norm_b == 0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(dot / (norm_a * norm_b))
+
+
+def _cosine_similarity_batch(query_emb, candidate_embs: np.ndarray) -> np.ndarray:
+    """Batch cosine similarity: query (D,) vs candidates (N, D) → scores (N,)."""
+    q = np.asarray(query_emb, dtype=np.float32)
+    c = np.asarray(candidate_embs, dtype=np.float32)
+    q_norm = np.linalg.norm(q)
+    if q_norm == 0:
+        return np.zeros(len(c), dtype=np.float32)
+    c_norms = np.linalg.norm(c, axis=1)
+    c_norms[c_norms == 0] = 1.0
+    return np.dot(c, q) / (c_norms * q_norm)
 
 
 # ── Temporal query parsing ──
@@ -535,6 +551,40 @@ class MemoryManager:
         if temporal_memory_hint:
             layered_memory["temporal_memory_hint"] = temporal_memory_hint
 
+        # Log recall summary
+        facts = layered_memory.get("facts", [])
+        events = layered_memory.get("events", [])
+        episodic = layered_memory.get("episodic", [])
+        emotions = layered_memory.get("emotion_influences", [])
+        rules = layered_memory.get("behavior_rules", [])
+        logger.info(
+            f"Memory recall [{conversation_id[:8]}]: "
+            f"semantic={len(recalled)} total, layered → "
+            f"facts={len(facts)}, events={len(events)}, "
+            f"episodic={len(episodic)}, emotion={len(emotions)}, rules={len(rules)}"
+        )
+        for mem in facts[:3]:
+            mt = mem.get("memory_type", "fact")
+            logger.info(f"  [{mt}] {mem.get('created_at_relative', '?')}: {mem.get('content', '')[:80]}")
+        if len(facts) > 3:
+            logger.info(f"  [fact] ... +{len(facts) - 3} more")
+        for mem in events[:3]:
+            logger.info(f"  [event] {mem.get('created_at_relative', '?')}: {mem.get('content', '')[:80]}")
+        if len(events) > 3:
+            logger.info(f"  [event] ... +{len(events) - 3} more")
+        for mem in episodic[:3]:
+            val = mem.get("valence", 0)
+            tag = " (+)" if val > 0.2 else " (-)" if val < -0.2 else ""
+            logger.info(f"  [episodic]{tag} {mem.get('created_at_relative', '?')}: {mem.get('content', '')[:80]}")
+        if len(episodic) > 3:
+            logger.info(f"  [episodic] ... +{len(episodic) - 3} more")
+        for emo in emotions[:3]:
+            val = emo.get("expected_valence", 0)
+            tag = " (+)" if val > 0.2 else " (-)" if val < -0.2 else ""
+            logger.info(f"  [emotion]{tag} {emo.get('trigger', '')[:80]}")
+        for rule in rules[:3]:
+            logger.info(f"  [rule] {rule[:80]}")
+
         return messages_context, layered_memory
 
     # ── Debug: recall pipeline introspection ──
@@ -785,20 +835,24 @@ class MemoryManager:
         all_relevant = list(set(seed_ids + neighbor_ids + hop2_ids))
         relevant_ph = ",".join(["%s"] * len(all_relevant))
 
-        # Load edges as adjacency: {node_id: [(neighbor_id, strength), ...]}
-        adjacency: dict[str, list[tuple[str, float]]] = {}
+        # Load edges as adjacency: {node_id: [(neighbor_id, strength, link_id), ...]}
+        adjacency: dict[str, list[tuple[str, float, str]]] = {}
+        link_id_map: dict[tuple[str, str], str] = {}  # (src, tgt) → link_id
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"SELECT source_id, target_id, strength FROM memory_links "
+                    f"SELECT id, source_id, target_id, strength FROM memory_links "
                     f"WHERE source_id IN ({relevant_ph}) OR target_id IN ({relevant_ph})",
                     tuple(all_relevant + all_relevant),
                 )
                 rows = await cur.fetchall()
 
-        for source_id, target_id, strength in rows:
-            adjacency.setdefault(source_id, []).append((target_id, float(strength)))
-            adjacency.setdefault(target_id, []).append((source_id, float(strength)))
+        for link_id, source_id, target_id, strength in rows:
+            s, t = str(source_id), str(target_id)
+            adjacency.setdefault(s, []).append((t, float(strength), link_id))
+            adjacency.setdefault(t, []).append((s, float(strength), link_id))
+            link_id_map[(s, t)] = link_id
+            link_id_map[(t, s)] = link_id
 
         # Load neighbor importance for scoring
         importance_map: dict[str, float] = {}
@@ -821,6 +875,7 @@ class MemoryManager:
         lateral_k = settings.MEMORY_LINK_LATERAL_K
 
         active_nodes = set(seed_ids)
+        used_link_ids: set[str] = set()  # S2: track links used in propagation
 
         for iteration in range(max_iter):
             # Compute propagation deltas
@@ -837,7 +892,7 @@ class MemoryManager:
 
                 out_degree = len(neighbors)
 
-                for neighbor_id, edge_strength in neighbors:
+                for neighbor_id, edge_strength, link_id in neighbors:
                     if neighbor_id in seed_ids:
                         continue  # Don't propagate back to seeds
 
@@ -852,6 +907,9 @@ class MemoryManager:
                     propagated *= target_imp
 
                     deltas[neighbor_id] = deltas.get(neighbor_id, 0.0) + propagated
+
+                    # S2: mark this link as used in propagation
+                    used_link_ids.add(link_id)
 
             # Apply deltas
             if not deltas:
@@ -933,6 +991,13 @@ class MemoryManager:
         # Sort by activation descending (highest activation first)
         linked_memories.sort(key=lambda m: m.get("_activation", 0), reverse=True)
         logger.info(f"Activation spread: {len(seed_ids)} seeds → {len(linked_memories)} recalled")
+
+        # S2: Strengthen links that were traversed during propagation
+        if used_link_ids:
+            asyncio.create_task(
+                self._strengthen_used_links(used_link_ids)
+            )
+
         return linked_memories
 
     async def _build_layered_memory(self, recalled: list, current_mood_warmth: float = 0.0,
@@ -1085,6 +1150,7 @@ class MemoryManager:
                 if no_caps or len(layered["episodic"]) < episodic_max:
                     valence = float(metadata.get("valence", 0))
                     layered["episodic"].append({
+                        "id": mem["id"],
                         "content": content,
                         "valence": valence,
                         "created_at_relative": _relative_time(mem["id"]),
@@ -1094,6 +1160,7 @@ class MemoryManager:
                 trigger = content
                 expected_valence = float(metadata.get("valence", 0))
                 layered["emotion_influences"].append({
+                    "id": mem["id"],
                     "trigger": trigger,
                     "expected_valence": expected_valence,
                     "created_at_relative": _relative_time(mem["id"]),
@@ -1329,11 +1396,17 @@ class MemoryManager:
             )
 
         if stored:
-            logger.info(f"Extracted {len(stored)} user memories from conversation {conversation_id[:8]}")
+            logger.info(f"Extracted {len(stored)} user memories:")
+            for mem in stored:
+                logger.info(f"  [{mem.get('memory_type', '?')}] {mem.get('content', '')[:80]}")
 
         # Create co-occurrence links between same-batch memories
         if settings.MEMORY_LINK_ENABLED and len(stored) >= 2:
             await self._create_co_occurrence_links(stored)
+
+        # Create semantic similarity links (S1)
+        if settings.MEMORY_LINK_ENABLED and settings.MEMORY_LINK_SEMANTIC_ENABLED and stored:
+            await self._create_semantic_links(stored)
 
         # Apply memory corrections
         if corrections_raw:
@@ -1471,7 +1544,9 @@ class MemoryManager:
             await self._create_co_occurrence_links(stored)
 
         if stored:
-            logger.info(f"Stored {len(stored)} self-memories in conversation {conversation_id[:8]}")
+            logger.info(f"Stored {len(stored)} self-memories:")
+            for mem in stored:
+                logger.info(f"  [{mem.get('memory_type', '?')}] {mem.get('content', '')[:80]}")
 
     # ── Memory search ──
 
@@ -1553,6 +1628,7 @@ class MemoryManager:
         # Batch encode uncached candidates
         if texts_to_encode:
             try:
+                logger.info(f"BGE: encoding {len(texts_to_encode)} candidates for semantic search (cached={len(candidates) - len(texts_to_encode)})")
                 embeddings = model.encode(texts_to_encode)
                 for j, idx in enumerate(text_indices):
                     cand_emb = embeddings[j].tolist()
@@ -1747,6 +1823,117 @@ class MemoryManager:
                             )
                 except Exception as e:
                     logger.debug(f"Failed to create co_occurrence link: {e}")
+
+    async def _create_semantic_links(self, stored: list):
+        """为新记忆创建语义相似度链接（S1）。
+
+        使用 NumPy 批量 cosine similarity，复用 _mem_embedding_cache。
+        """
+        if not settings.MEMORY_LINK_SEMANTIC_ENABLED:
+            return
+
+        cache = await self._get_mem_cache()
+        if not cache or len(cache) < 2:
+            return
+
+        threshold = settings.MEMORY_LINK_SEMANTIC_THRESHOLD
+        max_compare = settings.MEMORY_LINK_SEMANTIC_MAX_COMPARE
+        max_links = settings.MEMORY_LINK_SEMANTIC_MAX_LINKS
+        pool = await get_pool()
+
+        logger.info(f"BGE: encoding {len(stored)} new memories for semantic linking against {len(cache)} cached")
+
+        # Prepare candidate matrix from cache (sorted by importance for consistency)
+        # We sort by content hash for deterministic ordering, not importance,
+        # because we need consistent indexing
+        candidate_ids = []
+        candidate_embs = []
+        for mem_id, entry in cache.items():
+            # Skip memories that are in the current batch (not yet in cache at this point)
+            candidate_ids.append(mem_id)
+            candidate_embs.append(entry["emb"])
+
+        if not candidate_embs:
+            return
+
+        # Limit to max_compare most important (by cache size, importance sorting done at cache load)
+        # Actually we can't sort by importance from cache alone, so just take all
+        # (cache is already filtered to valid, non-consolidated memories)
+        emb_matrix = np.array(candidate_embs, dtype=np.float32)
+
+        total_links = 0
+        for new_mem in stored:
+            new_id = new_mem["id"]
+            new_content = new_mem["content"]
+
+            # Get embedding from cache (was added during dedup/insert)
+            cache_entry = cache.get(new_id)
+            if cache_entry:
+                new_emb = cache_entry["emb"]
+            else:
+                # Fallback: encode now (shouldn't happen if dedup ran)
+                model = _get_embedding_model()
+                new_emb = model.encode(new_content).tolist()
+                cache[new_id] = {"emb": new_emb, "content": new_content}
+
+            # Batch cosine similarity
+            scores = _cosine_similarity_batch(new_emb, emb_matrix)
+
+            # Find candidates above threshold (exclude self)
+            candidates = []
+            for i, score in enumerate(scores):
+                if score < threshold:
+                    continue
+                cand_id = candidate_ids[i]
+                if cand_id == new_id:
+                    continue
+                candidates.append((cand_id, float(score)))
+
+            # Sort by score descending, take top max_links
+            candidates.sort(key=lambda x: -x[1])
+            for target_id, sim in candidates[:max_links]:
+                try:
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                "INSERT IGNORE INTO memory_links "
+                                "(id, source_id, target_id, link_type, strength) "
+                                "VALUES (%s, %s, %s, 'semantic', %s)",
+                                (_generate_id(), new_id, target_id, sim),
+                            )
+                    total_links += 1
+                except Exception as e:
+                    logger.debug(f"Failed to create semantic link: {e}")
+
+    async def _strengthen_used_links(self, link_ids: set[str]):
+        """S2: Batch strengthen links that were traversed during activation spreading."""
+        if not link_ids:
+            return
+        strengthen = settings.MEMORY_LINK_RECALL_STRENGTHEN
+        cap = settings.MEMORY_LINK_RECALL_STRENGTHEN_CAP
+        pool = await get_pool()
+        try:
+            ids_list = list(link_ids)
+            total_updated = 0
+            # Process in batches of 50 to avoid overly large queries
+            for i in range(0, len(ids_list), 50):
+                batch = ids_list[i:i + 50]
+                ph = ",".join(["%s"] * len(batch))
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            f"UPDATE memory_links SET "
+                            f"strength = LEAST(strength + %s, %s), "
+                            f"recall_count = recall_count + 1, "
+                            f"last_recalled = NOW() "
+                            f"WHERE id IN ({ph}) AND strength < %s",
+                            (strengthen, cap, *batch, cap),
+                        )
+                        total_updated += cur.rowcount
+            if total_updated > 0:
+                logger.debug(f"S2: strengthened {total_updated} links by +{strengthen}")
+        except Exception as e:
+            logger.debug(f"S2 strengthen failed: {e}")
 
     async def _inherit_links(self, old_id: str, new_id: str, exclude_ids: set = None):
         """将 old_id 的所有链接重新指向 new_id，排除指定 ID。"""
@@ -2273,6 +2460,34 @@ class MemoryManager:
 
                 pruned_memories = tier1 + tier2 + tier3
 
+                # S2: Time decay on links not recalled recently
+                decay_amount = settings.MEMORY_LINK_TIME_DECAY_AMOUNT
+                decay_days = settings.MEMORY_LINK_TIME_DECAY_DAYS
+                await cur.execute(
+                    "UPDATE memory_links SET strength = GREATEST(strength - %s, 0.05) "
+                    "WHERE last_recalled IS NOT NULL "
+                    "AND last_recalled < DATE_SUB(NOW(), INTERVAL %s DAY) "
+                    "AND strength > 0.05",
+                    (decay_amount, decay_days),
+                )
+                time_decayed = cur.rowcount
+
+                # S2: Also decay links that were NEVER recalled (no last_recalled)
+                await cur.execute(
+                    "UPDATE memory_links SET strength = GREATEST(strength - %s, 0.05) "
+                    "WHERE last_recalled IS NULL "
+                    "AND created_at < DATE_SUB(NOW(), INTERVAL %s DAY) "
+                    "AND strength > 0.05",
+                    (decay_amount, decay_days),
+                )
+                never_recalled_decayed = cur.rowcount
+
+                if time_decayed or never_recalled_decayed:
+                    logger.info(
+                        f"S2 time decay: {time_decayed} stale links, "
+                        f"{never_recalled_decayed} never-recalled links decayed by -{decay_amount}"
+                    )
+
                 # Delete weak links
                 await cur.execute(
                     "DELETE FROM memory_links WHERE strength < 0.05"
@@ -2325,6 +2540,7 @@ class MemoryManager:
             if len(rows) < 3:
                 continue
 
+            logger.info(f"BGE: encoding {len(rows)} memories for {memory_type} clustering")
             # Encode all memories
             embeddings = {}
             for r in rows:

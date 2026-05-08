@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     LANGUAGE: str = "zh"
     USER_NAME: str = "shouss"
     MAX_CONTEXT_MESSAGES: int = 20
-    MEMORY_RECALL_COUNT: int = 5
+    MEMORY_RECALL_COUNT: int = 10
     AUTO_MEMORY_EXTRACTION: bool = True
 
     # Memory layered injection
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # User preference learning
     PREFERENCE_LEARNING_ENABLED: bool = True
-    PREFERENCE_LEARN_INTERVAL: int = 5           # learn every N exchanges
+    PREFERENCE_LEARN_INTERVAL: int = 20           # learn every N exchanges
 
     # Proactive messaging
     PROACTIVE_ENABLED: bool = True
@@ -141,6 +141,18 @@ class Settings(BaseSettings):
     MEMORY_LINK_CO_OCCURRENCE_STRENGTH: float = 0.7
     MEMORY_LINK_CONSOLIDATION_STRENGTH: float = 0.4
     MEMORY_LINK_STRENGTH_DECAY_ON_INHERIT: float = 0.8  # 继承链接时强度衰减系数
+
+    # Memory graph — Semantic similarity linking (S1)
+    MEMORY_LINK_SEMANTIC_ENABLED: bool = True
+    MEMORY_LINK_SEMANTIC_THRESHOLD: float = 0.80         # cosine similarity 阈值
+    MEMORY_LINK_SEMANTIC_MAX_COMPARE: int = 200          # 最多比较多少条已有记忆
+    MEMORY_LINK_SEMANTIC_MAX_LINKS: int = 5              # 每条新记忆最多创建多少条语义链接
+
+    # Memory graph — Dynamic link strength (S2)
+    MEMORY_LINK_RECALL_STRENGTHEN: float = 0.02          # 每次 co-recall 增强量
+    MEMORY_LINK_RECALL_STRENGTHEN_CAP: float = 1.0       # 链接强度上限
+    MEMORY_LINK_TIME_DECAY_AMOUNT: float = 0.01          # 长期未回忆的衰减量
+    MEMORY_LINK_TIME_DECAY_DAYS: int = 30                # 超过此天数未回忆开始衰减
 
     # Memory extraction limits (per conversation turn)
     MEMORY_EXTRACT_USER_LIMIT: int = 8
