@@ -333,3 +333,23 @@ async def get_temporal_context(conversation_id: Optional[str] = None) -> Tempora
 def is_late_night() -> bool:
     """Quick check if current time is late night (0-5)."""
     return settings.TEMPORAL_LATE_NIGHT_START <= datetime.now().hour < settings.TEMPORAL_LATE_NIGHT_END
+
+
+def get_relationship_stage(days_known: int) -> str:
+    """Map relationship tenure (days) to relationship_dynamics stage key.
+
+    Returns one of: new_acquaintance, familiar, close, very_close
+    """
+    if days_known < 1:
+        return "new_acquaintance"
+    if days_known < 7:
+        return "familiar"
+    if days_known < 30:
+        return "close"
+    return "very_close"
+
+
+def get_relationship_stage_desc(days_known: int, dynamics: dict) -> str:
+    """Get the description for the current relationship stage from dynamics dict."""
+    stage = get_relationship_stage(days_known)
+    return dynamics.get(stage, dynamics.get("new_acquaintance", ""))

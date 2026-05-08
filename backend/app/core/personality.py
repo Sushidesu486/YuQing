@@ -125,6 +125,15 @@ class PersonalityEngine:
         """
         personality = self.get_personality()
 
+        # Compute current relationship stage
+        relationship_stage = None
+        relationship_stage_desc = None
+        if temporal_context:
+            from app.core.temporal import get_relationship_stage
+            relationship_stage = get_relationship_stage(temporal_context.days_known)
+            dynamics = personality.get("relationship_dynamics", {})
+            relationship_stage_desc = dynamics.get(relationship_stage, "")
+
         # Load shared data
         preference_hints = None
         try:
@@ -175,6 +184,8 @@ class PersonalityEngine:
         stable_prompt = stable_template.render(
             personality=personality,
             stickers=stickers,
+            relationship_stage=relationship_stage,
+            relationship_stage_desc=relationship_stage_desc,
         )
 
         # Dynamic prompt: memories, mood, time, tools (changes every request)
