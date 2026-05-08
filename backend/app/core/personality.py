@@ -184,6 +184,8 @@ class PersonalityEngine:
             try:
                 from app.core.memory import memory_manager as mm
                 today_topics = await mm.get_today_conversation_topics(conversation_id)
+                if today_topics:
+                    logger.info(f"Today topics loaded: {len(today_topics)} items for [{conversation_id[:8]}]")
             except Exception as e:
                 logger.debug(f"Failed to load today topics: {e}")
 

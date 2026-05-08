@@ -1834,7 +1834,7 @@ class MemoryManager:
         """Return today's assistant responses as condensed topic hints.
 
         Helps YuQing avoid repeating topics she already discussed today.
-        Deduplicated by prefix overlap; truncated to 60 chars each.
+        Deduplicated by prefix; truncated to 50 chars each.
         """
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -1852,15 +1852,14 @@ class MemoryManager:
         topics = []
         for r in rows:
             text = r["content"].strip()
-            if not text or len(text) < 6:
+            if not text or len(text) < 15:
                 continue
-            truncated = text[:60] + ("..." if len(text) > 60 else "")
-            # Deduplicate by first 20 chars
-            prefix = truncated[:20]
+            truncated = text[:50] + ("..." if len(text) > 50 else "")
+            prefix = truncated[:25]
             if prefix not in seen:
                 seen.add(prefix)
                 topics.append(truncated)
-        return topics
+        return topics[:10]
 
     # ── Memory decay ──
 
