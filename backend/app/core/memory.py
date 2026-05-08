@@ -1818,6 +1818,38 @@ class MemoryManager:
             })
         return result
 
+    async def get_today_conversation_topics(self, conversation_id: str, limit: int = 15) -> list:
+        """Return today's assistant responses as condensed topic hints.
+
+        Helps YuQing avoid repeating topics she already discussed today.
+        Deduplicated by prefix overlap; truncated to 60 chars each.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT content FROM messages "
+                    "WHERE conversation_id = %s AND role = 'assistant' "
+                    "AND content_type != 'sticker' AND created_at >= CURDATE() "
+                    "ORDER BY created_at DESC LIMIT %s",
+                    (conversation_id, limit),
+                )
+                rows = await cur.fetchall()
+
+        seen = set()
+        topics = []
+        for r in rows:
+            text = r["content"].strip()
+            if not text or len(text) < 6:
+                continue
+            truncated = text[:60] + ("..." if len(text) > 60 else "")
+            # Deduplicate by first 20 chars
+            prefix = truncated[:20]
+            if prefix not in seen:
+                seen.add(prefix)
+                topics.append(truncated)
+        return topics
+
     # ── Memory decay ──
 
     async def apply_decay(self):

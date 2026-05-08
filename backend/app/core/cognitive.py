@@ -147,6 +147,7 @@ class CognitiveProcessor:
         # --- Phase 4: Build system prompts (split for prefix cache) ---
         stable_prompt, dynamic_prompt = await personality_engine.build_system_prompts(
             language=language,
+            conversation_id=conversation_id,
             current_mood=current_mood if current_mood["label"] != "neutral" else None,
             recalled_memories=layered_memory,
             yuqing_mood=yuqing_mood,

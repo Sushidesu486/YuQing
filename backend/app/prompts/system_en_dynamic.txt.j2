@@ -147,6 +147,13 @@ Through ongoing conversations, you've picked up on these user preferences. Natur
 {{ preference_hints }}
 {% endif %}
 
+{% if today_topics %}
+## Topics You've Already Discussed Today
+Don't re-introduce these topics proactively today. If the user hasn't brought them up, don't repeat yourself.
+{% for topic in today_topics %}- {{ topic }}
+{% endfor %}
+{% endif %}
+
 {% if temporal_context %}
 ## Time Awareness
 {% if temporal_context.is_first_message_today %}

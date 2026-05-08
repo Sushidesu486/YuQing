@@ -138,6 +138,13 @@
 {{ preference_hints }}
 {% endif %}
 
+{% if today_topics %}
+## 你今天聊过的话题
+不要在同一天内重复主动聊这些话题。如果用户没提起，不要在短时间内反复说同一件事。
+{% for topic in today_topics %}- {{ topic }}
+{% endfor %}
+{% endif %}
+
 {% if temporal_context %}
 ## 时间感知
 {% if temporal_context.is_first_message_today %}

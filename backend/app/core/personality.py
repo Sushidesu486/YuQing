@@ -111,6 +111,7 @@ class PersonalityEngine:
     async def build_system_prompts(
         self,
         language: str = "zh",
+        conversation_id: str = "",
         current_mood: Optional[dict] = None,
         recalled_memories: Optional[dict] = None,
         yuqing_mood: Optional[dict] = None,
@@ -178,6 +179,14 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load self reflections: {e}")
 
+        today_topics = None
+        if conversation_id:
+            try:
+                from app.core.memory import memory_manager as mm
+                today_topics = await mm.get_today_conversation_topics(conversation_id)
+            except Exception as e:
+                logger.debug(f"Failed to load today topics: {e}")
+
         stickers = [
             {"name": s["path"].split("/")[-1], "desc": s["desc"]}
             for s in STICKER_DEFINITIONS
@@ -214,6 +223,7 @@ class PersonalityEngine:
             emotion_trajectory=emotion_trajectory,
             emotion_profile=emotion_profile,
             recent_reflections=recent_reflections,
+            today_topics=today_topics,
         )
 
         return stable_prompt, dynamic_prompt
