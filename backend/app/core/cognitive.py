@@ -195,9 +195,11 @@ class CognitiveProcessor:
                 rows = await cur.fetchall()
         for row in reversed(rows):
             if row.get("content_type") == "sticker":
-                # Show YuQing's own stickers as natural description; skip user stickers (handled by trigger text)
+                # Inject sticker as /name format so LLM sees the correct format in history
                 if row["role"] == "assistant":
-                    messages.append({"role": "assistant", "content": f"（发了一张贴纸）"})
+                    sticker_path = row.get("content", "")
+                    basename = sticker_path.split("/")[-1] if "/" in sticker_path else sticker_path
+                    messages.append({"role": "assistant", "content": f"/{basename}"})
                 continue
             messages.append({"role": row["role"], "content": row["content"]})
 
@@ -341,6 +343,10 @@ class CognitiveProcessor:
             clean_response = clean_response.replace(f"/{sticker_name}", "")
             clean_response = clean_response.replace(f"/{basename}", "")
             clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
+
+        # Safety: strip text-based sticker descriptions the LLM might mistakenly output
+        clean_response = re.sub(r'[（(]发了[一张个]?贴纸[）)]', '', clean_response)
+        clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
 
         display_response = clean_response if clean_response else full_response
         async with pool.acquire() as conn:
