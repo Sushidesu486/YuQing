@@ -1281,14 +1281,24 @@ class MemoryManager:
         prompt = INNER_MONOLOGUE_PROMPT_ZH.replace("{user_message}", user_message)
         prompt = prompt.replace("{assistant_response}", assistant_response)
 
+        monologue_text = ""
+        valence = 0.0
+
         try:
             result = await generate_completion(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
+                messages=[
+                    {"role": "system", "content": "你是雨晴的内心声音。用中文写出你的真实想法，只返回JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.5,
                 max_tokens=200,
             )
         except Exception as e:
             logger.debug(f"Inner monologue LLM call failed: {e}")
+            return None
+
+        if not result or not result.strip():
+            logger.debug("Inner monologue: LLM returned empty response")
             return None
 
         # Parse JSON
@@ -1301,7 +1311,7 @@ class MemoryManager:
             monologue_text = parsed.get("monologue", "").strip()
             valence = float(parsed.get("valence", 0.0))
         except (json.JSONDecodeError, ValueError, KeyError):
-            logger.warning(f"Failed to parse inner monologue: {result[:200]}")
+            logger.warning(f"Inner monologue parse failed: {result[:200]}")
             return None
 
         if not monologue_text:
