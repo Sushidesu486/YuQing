@@ -450,25 +450,20 @@ class CognitiveProcessor:
 
                 # Extract memories
                 if settings.AUTO_MEMORY_EXTRACTION:
-                    # --- Phase 8.5: Inner monologue (before memory extraction) ---
-                    inner_monologue = None
+                    # --- Phase 8.5: Inner monologue (fire-and-forget, don't block extraction) ---
                     if settings.INNER_MONOLOGUE_ENABLED:
-                        try:
-                            inner_monologue = await asyncio.wait_for(
-                                memory_manager._generate_inner_monologue(
+                        async def _monologue_task():
+                            try:
+                                await memory_manager._generate_inner_monologue(
                                     user_message, full_response, language,
-                                ),
-                                timeout=15.0,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning("Inner monologue timed out (15s)")
-                        except Exception as e:
-                            logger.warning(f"Inner monologue failed: {e}")
+                                )
+                            except Exception as e:
+                                logger.debug(f"Inner monologue bg failed: {e}")
+                        asyncio.create_task(_monologue_task())
 
                     extracted = await memory_manager.extract_and_store_memories(
                         conversation_id, user_message, full_response, language,
                         recalled_facts=layered_memory.get("facts", []) + layered_memory.get("events", []),
-                        inner_monologue=inner_monologue,
                     )
                     if extracted:
                         logger.info(f"Background: extracted {len(extracted)} memories")

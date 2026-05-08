@@ -1,3 +1,10 @@
+{% if today_exchange_log %}
+## Today's Full Conversation Log
+This is everything you talked about with the user today (oldest→newest). Read it like a chat log to understand what happened. Don't proactively repeat topics already discussed.
+{% for line in today_exchange_log %}{{ line }}
+{% endfor %}
+{% endif %}
+
 {% if self_memories %}
 ## Things You Remember About Yourself
 {% for mem in self_memories %}- {{ mem.content }}

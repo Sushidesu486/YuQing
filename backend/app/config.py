@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Application
     LANGUAGE: str = "zh"
     USER_NAME: str = "shouss"
-    MAX_CONTEXT_MESSAGES: int = 20
+    MAX_CONTEXT_MESSAGES: int = 10
     MEMORY_RECALL_COUNT: int = 10
     AUTO_MEMORY_EXTRACTION: bool = True
     INNER_MONOLOGUE_ENABLED: bool = True        # Phase 8.5: 雨晴内心独白（记忆提取前）

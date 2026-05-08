@@ -180,12 +180,16 @@ class PersonalityEngine:
             logger.debug(f"Failed to load self reflections: {e}")
 
         today_topics = None
+        today_exchange_log = None
         if conversation_id:
             try:
                 from app.core.memory import memory_manager as mm
                 today_topics = await mm.get_today_conversation_topics(conversation_id)
                 if today_topics:
                     logger.info(f"Today topics loaded: {len(today_topics)} items for [{conversation_id[:8]}]")
+                today_exchange_log = await mm.get_today_exchange_log(conversation_id)
+                if today_exchange_log:
+                    logger.info(f"Today exchange log loaded: {len(today_exchange_log)} rounds for [{conversation_id[:8]}]")
             except Exception as e:
                 logger.debug(f"Failed to load today topics: {e}")
 
@@ -226,6 +230,7 @@ class PersonalityEngine:
             emotion_profile=emotion_profile,
             recent_reflections=recent_reflections,
             today_topics=today_topics,
+            today_exchange_log=today_exchange_log,
         )
 
         return stable_prompt, dynamic_prompt

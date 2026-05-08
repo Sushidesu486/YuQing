@@ -1,3 +1,10 @@
+{% if today_exchange_log %}
+## 今日对话全记录
+这是你今天和用户聊过的所有话题（最早→最晚）。请像翻看聊天记录一样了解今天发生了什么。不要在已经聊过的话题上反复主动搭话。
+{% for line in today_exchange_log %}{{ line }}
+{% endfor %}
+{% endif %}
+
 {% if self_memories %}
 ## 你记得的自己
 {% for mem in self_memories %}- {{ mem.content }}

@@ -1861,6 +1861,40 @@ class MemoryManager:
                 topics.append(truncated)
         return topics[:10]
 
+    async def get_today_exchange_log(self, conversation_id: str, max_rounds: int = 50) -> list:
+        """Return the full today's conversation as condensed exchange log.
+
+        Each entry: "用户: <msg> | 你: <reply>"
+        Truncated to 40 chars per side. Chronological order.
+        Helps YuQing see the complete narrative of today's chat.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT role, content FROM messages "
+                    "WHERE conversation_id = %s AND content_type != 'sticker' "
+                    "AND created_at >= CURDATE() "
+                    "ORDER BY created_at ASC LIMIT %s",
+                    (conversation_id, max_rounds * 2),
+                )
+                rows = await cur.fetchall()
+
+        log = []
+        buf_user = None
+        for r in rows:
+            text = r["content"].strip()
+            if not text or len(text) < 3:
+                continue
+            truncated = text[:40] + ("…" if len(text) > 40 else "")
+            if r["role"] == "user":
+                buf_user = truncated
+            elif r["role"] == "assistant" and buf_user:
+                log.append(f"用户: {buf_user} | 你: {truncated}")
+                buf_user = None
+
+        return log[-max_rounds:]
+
     # ── Memory decay ──
 
     async def apply_decay(self):
