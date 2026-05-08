@@ -12,10 +12,37 @@ from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task
 from app.core.memory import sleep_cleanup_background_task
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+
+class ColoredFormatter(logging.Formatter):
+    """Color-coded log levels for terminal visibility."""
+
+    COLORS = {
+        logging.DEBUG:    "\033[90m",   # gray
+        logging.INFO:     "\033[36m",   # cyan
+        logging.WARNING:  "\033[33m",   # yellow
+        logging.ERROR:    "\033[31m",   # red
+        logging.CRITICAL: "\033[35m",   # magenta
+    }
+    RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self.COLORS.get(record.levelno, "")
+        if color:
+            record.levelname = f"{color}{record.levelname}{self.RESET}"
+            record.msg = f"{color}{record.msg}{self.RESET}"
+        return super().format(record)
+
+
+handler = logging.StreamHandler()
+handler.setFormatter(ColoredFormatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+logging.root.handlers = [handler]
+logging.root.setLevel(logging.INFO)
+
+# Suppress noisy third-party INFO logs
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

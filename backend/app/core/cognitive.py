@@ -457,10 +457,10 @@ class CognitiveProcessor:
                                 memory_manager._generate_inner_monologue(
                                     user_message, full_response, language,
                                 ),
-                                timeout=8.0,
+                                timeout=15.0,
                             )
                         except asyncio.TimeoutError:
-                            logger.warning("Inner monologue timed out (8s)")
+                            logger.warning("Inner monologue timed out (15s)")
                         except Exception as e:
                             logger.warning(f"Inner monologue failed: {e}")
 

@@ -223,8 +223,10 @@ def _get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         from sentence_transformers import SentenceTransformer
+        from functools import partial
         model_name = settings.EMBEDDING_MODEL
         _embedding_model = SentenceTransformer(model_name)
+        _embedding_model.encode = partial(_embedding_model.encode, show_progress_bar=False)
         logger.info(f"Embedding model loaded: {model_name}")
     return _embedding_model
 
