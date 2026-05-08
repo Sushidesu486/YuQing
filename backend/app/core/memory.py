@@ -1278,22 +1278,22 @@ class MemoryManager:
         if not settings.INNER_MONOLOGUE_ENABLED:
             return None
 
-        from app.core.llm import generate_completion
+        from app.core.llm import stream_completion
 
         prompt = INNER_MONOLOGUE_PROMPT_ZH.replace("{user_message}", user_message)
         prompt = prompt.replace("{assistant_response}", assistant_response)
 
-        monologue_text = ""
-        valence = 0.0
-
         try:
-            result = await generate_completion(
+            chunks = []
+            async for chunk in stream_completion(
                 messages=[
                     {"role": "system", "content": "你是雨晴的内心声音。用中文写出你的真实想法，只返回JSON。"},
                     {"role": "user", "content": prompt},
                 ],
                 max_completion_tokens=200,
-            )
+            ):
+                chunks.append(chunk)
+            result = "".join(chunks)
         except Exception as e:
             logger.warning(f"Inner monologue LLM call failed: {e}")
             return None
