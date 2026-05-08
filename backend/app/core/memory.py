@@ -1741,7 +1741,7 @@ class MemoryManager:
         # Batch encode uncached candidates
         if texts_to_encode:
             try:
-                logger.info(f"BGE: encoding {len(texts_to_encode)} candidates for semantic search (cached={len(candidates) - len(texts_to_encode)})")
+                logger.debug(f"BGE: encoding {len(texts_to_encode)} candidates for semantic search (cached={len(candidates) - len(texts_to_encode)})")
                 embeddings = model.encode(texts_to_encode)
                 for j, idx in enumerate(text_indices):
                     cand_emb = embeddings[j].tolist()
@@ -1978,7 +1978,7 @@ class MemoryManager:
         max_links = settings.MEMORY_LINK_SEMANTIC_MAX_LINKS
         pool = await get_pool()
 
-        logger.info(f"BGE: encoding {len(stored)} new memories for semantic linking against {len(cache)} cached")
+        logger.debug(f"BGE: encoding {len(stored)} new memories for semantic linking against {len(cache)} cached")
 
         # Prepare candidate matrix from cache (sorted by importance for consistency)
         # We sort by content hash for deterministic ordering, not importance,
@@ -2677,7 +2677,7 @@ class MemoryManager:
             if len(rows) < 3:
                 continue
 
-            logger.info(f"BGE: encoding {len(rows)} memories for {memory_type} clustering")
+            logger.debug(f"BGE: encoding {len(rows)} memories for {memory_type} clustering")
             # Encode all memories
             embeddings = {}
             for r in rows:
