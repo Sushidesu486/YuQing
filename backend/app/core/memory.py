@@ -1284,16 +1284,28 @@ class MemoryManager:
         prompt = prompt.replace("{assistant_response}", assistant_response)
 
         try:
-            chunks = []
-            async for chunk in stream_completion(
+            # Use litellm directly to capture both content and reasoning_content
+            import litellm
+            response = await litellm.acompletion(
+                model=settings.LITELLM_MODEL,
                 messages=[
                     {"role": "system", "content": "你是雨晴的内心声音。用中文写出你的真实想法，只返回JSON。"},
                     {"role": "user", "content": prompt},
                 ],
-                max_completion_tokens=200,
-            ):
-                chunks.append(chunk)
-            result = "".join(chunks)
+                api_key=settings.LITELLM_API_KEY,
+                api_base=settings.LITELLM_API_BASE or None,
+                stream=True,
+                timeout=settings.LITELLM_TIMEOUT,
+            )
+            chunks_text = []
+            reasoning_text = []
+            async for chunk in response:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    chunks_text.append(delta.content)
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_text.append(delta.reasoning_content)
+            result = "".join(chunks_text) or "".join(reasoning_text)
         except Exception as e:
             logger.warning(f"Inner monologue LLM call failed: {e}")
             return None
