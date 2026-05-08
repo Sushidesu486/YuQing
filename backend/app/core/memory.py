@@ -1290,16 +1290,17 @@ class MemoryManager:
                     {"role": "system", "content": "你是雨晴的内心声音。用中文写出你的真实想法，只返回JSON。"},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.5,
-                max_tokens=200,
+                max_completion_tokens=200,
             )
         except Exception as e:
-            logger.debug(f"Inner monologue LLM call failed: {e}")
+            logger.warning(f"Inner monologue LLM call failed: {e}")
             return None
 
         if not result or not result.strip():
-            logger.debug("Inner monologue: LLM returned empty response")
+            logger.warning(f"Inner monologue: LLM returned empty response (model may not support this prompt format)")
             return None
+
+        logger.info(f"Inner monologue raw ({len(result)} chars): {result[:200]}")
 
         # Parse JSON
         try:

@@ -457,12 +457,12 @@ class CognitiveProcessor:
                                 memory_manager._generate_inner_monologue(
                                     user_message, full_response, language,
                                 ),
-                                timeout=5.0,
+                                timeout=8.0,
                             )
                         except asyncio.TimeoutError:
-                            logger.debug("Inner monologue timed out")
+                            logger.warning("Inner monologue timed out (8s)")
                         except Exception as e:
-                            logger.debug(f"Inner monologue failed: {e}")
+                            logger.warning(f"Inner monologue failed: {e}")
 
                     extracted = await memory_manager.extract_and_store_memories(
                         conversation_id, user_message, full_response, language,
