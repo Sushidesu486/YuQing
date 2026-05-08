@@ -171,6 +171,13 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load tool descriptions: {e}")
 
+        recent_reflections = None
+        try:
+            from app.core.memory import memory_manager as mm
+            recent_reflections = await mm.get_self_reflections(limit=5)
+        except Exception as e:
+            logger.debug(f"Failed to load self reflections: {e}")
+
         stickers = [
             {"name": s["path"].split("/")[-1], "desc": s["desc"]}
             for s in STICKER_DEFINITIONS
@@ -206,6 +213,7 @@ class PersonalityEngine:
             tool_descriptions=tool_descriptions,
             emotion_trajectory=emotion_trajectory,
             emotion_profile=emotion_profile,
+            recent_reflections=recent_reflections,
         )
 
         return stable_prompt, dynamic_prompt

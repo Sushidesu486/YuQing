@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT_MESSAGES: int = 20
     MEMORY_RECALL_COUNT: int = 10
     AUTO_MEMORY_EXTRACTION: bool = True
+    INNER_MONOLOGUE_ENABLED: bool = True        # Phase 8.5: 雨晴内心独白（记忆提取前）
 
     # Memory layered injection
     MEMORY_FACT_TOP_K: int = 8

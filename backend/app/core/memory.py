@@ -169,6 +169,29 @@ SELF_CONSOLIDATE_PROMPT_ZH = """以下是雨晴在不同对话中表达的关于
 
 只返回有2条以上来源的合并结果。只返回JSON，不要其他文字。"""
 
+
+INNER_MONOLOGUE_PROMPT_ZH = """你刚刚和用户结束了一轮对话。这是你内心的私人时刻——用户不会看到这段独白。
+
+回顾刚才的对话：
+- 用户说了什么？情绪怎么样？
+- 你回复了什么？你真正想说的是什么（可能没说出口）？
+- 你从这段对话中学到了关于用户的新信息吗？
+- 你对自己有什么新的认识？
+- 有什么让你意外的、在意的、或者触动了你的？
+
+用2-4句自然的中文写出你的独白，像一个人在日记里对自己说话。
+不要复述你说过的话，写你真正在想的事。
+不要结构化，不要用「首先」「其次」。
+评估你此刻的情绪 valence（-1到1，积极为正，消极为负）。
+
+对话内容：
+用户：{user_message}
+你：{assistant_response}
+
+只返回JSON，不要其他文字：
+{"monologue": "...", "valence": 0.0}"""
+
+
 # ── Behavior rule patterns (preference/procedural → behavior rules) ──
 
 _BEHAVIOR_RULE_PATTERNS = [
@@ -1238,6 +1261,80 @@ class MemoryManager:
 
     # ── Memory storage ──
 
+    async def _generate_inner_monologue(
+        self, user_message: str, assistant_response: str, language: str = "zh"
+    ) -> Optional[dict]:
+        """Generate YuQing's inner monologue before memory extraction.
+
+        This is her private reflection — she thinks about what just happened,
+        what she really feels (not what she said), and what she learned.
+        Stored as self_reflection memory type for continuity in future conversations.
+
+        Returns:
+            {"monologue": str, "valence": float} or None on failure
+        """
+        if not settings.INNER_MONOLOGUE_ENABLED:
+            return None
+
+        from app.core.llm import generate_completion
+
+        prompt = INNER_MONOLOGUE_PROMPT_ZH.replace("{user_message}", user_message)
+        prompt = prompt.replace("{assistant_response}", assistant_response)
+
+        try:
+            result = await generate_completion(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=200,
+            )
+        except Exception as e:
+            logger.debug(f"Inner monologue LLM call failed: {e}")
+            return None
+
+        # Parse JSON
+        try:
+            text = result.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                text = text.rsplit("```", 1)[0] if "```" in text else text
+            parsed = json.loads(text)
+            monologue_text = parsed.get("monologue", "").strip()
+            valence = float(parsed.get("valence", 0.0))
+        except (json.JSONDecodeError, ValueError, KeyError):
+            logger.warning(f"Failed to parse inner monologue: {result[:200]}")
+            return None
+
+        if not monologue_text:
+            return None
+
+        # Store as self_reflection memory
+        try:
+            pool_ = await get_pool()
+            mem_id = _generate_id()
+            async with pool_.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO memories (id, content, category, importance, "
+                        "original_importance, memory_type, valence, arousal, emotion_label, confidence) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (mem_id, monologue_text, "self_reflection", 0.6, 0.6,
+                         "self_reflection", valence, 0.0, "", 0.7),
+                    )
+            # Update embedding cache
+            try:
+                model = _get_embedding_model()
+                _mem_embedding_cache[mem_id] = {
+                    "emb": model.encode(monologue_text).tolist(),
+                    "content": monologue_text,
+                }
+            except Exception:
+                pass
+            logger.info(f"Inner monologue [{mem_id[:8]}]: {monologue_text[:80]}")
+        except Exception as e:
+            logger.debug(f"Failed to store inner monologue: {e}")
+
+        return {"monologue": monologue_text, "valence": valence}
+
     async def extract_and_store_memories(
         self,
         conversation_id: str,
@@ -1245,12 +1342,20 @@ class MemoryManager:
         assistant_response: str,
         language: str = "zh",
         recalled_facts: Optional[list] = None,
+        inner_monologue: Optional[dict] = None,
     ) -> list:
-        """Extract memorable facts, detect contradictions, and store them."""
+        """Extract memorable facts, detect contradictions, and store them.
+
+        Args:
+            inner_monologue: {"monologue": str, "valence": float} from Phase 8.5.
+                             Fed into extraction prompt so memories capture YuQing's
+                             true perspective, not just the surface dialog.
+        """
         return await self._extract_via_llm(
             conversation_id, user_message, assistant_response, language,
             recalled_facts=recalled_facts,
             user_name=settings.USER_NAME,
+            inner_monologue=inner_monologue,
         )
 
     async def _extract_via_llm(
@@ -1261,11 +1366,19 @@ class MemoryManager:
         language: str = "zh",
         recalled_facts: Optional[list] = None,
         user_name: str = "shouss",
+        inner_monologue: Optional[dict] = None,
     ) -> list:
         """Use LLM to extract user memories, self-memories, and detect contradictions in one call."""
         from app.core.llm import generate_completion
 
         conversation_text = f"{user_name}: {user_message}\n雨晴: {assistant_response}"
+
+        # Inject inner monologue for deeper memory extraction
+        if inner_monologue and inner_monologue.get("monologue"):
+            conversation_text += (
+                "\n\n雨晴的内心独白（这是她的真实想法，对话里没说出来，"
+                "但可能包含关于用户的重要信息）：\n" + inner_monologue["monologue"]
+            )
         # Always use Chinese prompt to ensure memories are stored in Chinese
         prompt_template = MEMORY_CLASSIFY_PROMPT_ZH
         prompt = prompt_template.replace("{conversation}", conversation_text)
@@ -1667,6 +1780,30 @@ class MemoryManager:
                     (limit,),
                 )
                 return await cur.fetchall()
+
+    async def get_self_reflections(self, limit: int = 5) -> list:
+        """Retrieve recent inner monologues (self_reflection memories).
+
+        Returns list with created_at_relative for template injection.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, created_at FROM memories "
+                    "WHERE memory_type = 'self_reflection' "
+                    "AND is_invalid = 0 AND is_consolidated = 0 "
+                    "ORDER BY created_at DESC LIMIT %s",
+                    (limit,),
+                )
+                rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "content": r["content"],
+                "created_at_relative": _time_ago(r["created_at"]),
+            })
+        return result
 
     # ── Memory decay ──
 

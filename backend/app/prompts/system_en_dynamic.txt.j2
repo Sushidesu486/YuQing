@@ -13,6 +13,14 @@
 {{ self_narrative }}
 {% endif %}
 
+{% if recent_reflections %}
+## Your Recent Inner Thoughts
+{% for r in recent_reflections %}- [{{ r.created_at_relative }}] {{ r.content }}
+{% endfor %}
+
+These are your private reflections, not things you said to the user. You can naturally allude to them in conversation — like "I was just thinking..." or "lately I've been feeling..." — but don't recite them directly.
+{% endif %}
+
 {% if recent_knowledge %}
 ## Things You've Learned Recently
 {% for item in recent_knowledge %}- [{{ item.topic }}] {{ item.content }} ({{ item.retrieved_at_relative }})
