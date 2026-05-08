@@ -8,7 +8,7 @@
 
 ## 概述
 
-语晴通过 [Tavily](https://tavily.com) API 搜索互联网信息，弥补 LLM 知识截止日期的局限。支持两种检索模式：后台主动搜索和对话中被动触发。
+雨晴通过 [Tavily](https://tavily.com) API 搜索互联网信息，弥补 LLM 知识截止日期的局限。支持两种检索模式：后台主动搜索和对话中被动触发。
 
 ## Tavily API 简介
 
@@ -64,7 +64,7 @@ INFO_RETRIEVAL_REACTIVE_ENABLED=true       # 启用被动检索
 
 ### 1. 主动检索（Proactive）
 
-后台定时任务，按语晴的兴趣自动搜索最新资讯。
+后台定时任务，按雨晴的兴趣自动搜索最新资讯。
 
 **流程**：
 ```
@@ -82,15 +82,15 @@ INFO_RETRIEVAL_REACTIVE_ENABLED=true       # 启用被动检索
     │
     ├─ 调用 Tavily API → [{title, content, url}, ...]
     │
-    ├─ LLM 第一人称总结（2-3 句话，语晴视角的感想）
-    │  prompt: "以下是关于「{topic}」的最新搜索结果...请用2-3句话总结...以语晴的第一人称视角"
+    ├─ LLM 第一人称总结（2-3 句话，雨晴视角的感想）
+    │  prompt: "以下是关于「{topic}」的最新搜索结果...请用2-3句话总结...以雨晴的第一人称视角"
     │
     ├─ 存入 knowledge_items 表（source_type='proactive'）
     │
     └─ 更新上次检索时间
 ```
 
-**注入位置**：system prompt「最近了解的事」区块，语晴可在对话中自然引用。
+**注入位置**：system prompt「最近了解的事」区块，雨晴可在对话中自然引用。
 
 **首次延迟**：启动后等待 5 分钟再执行第一次检索，避免启动时负载过高。
 
@@ -110,7 +110,7 @@ INFO_RETRIEVAL_REACTIVE_ENABLED=true       # 启用被动检索
                 Tavily API 搜索
                     │
                     ▼
-                LLM 总结（语晴视角）
+                LLM 总结（雨晴视角）
                     │
                     ▼
                 注入 messages 上下文（system 角色）
@@ -191,7 +191,7 @@ messages.append({
 {search_results}
 
 请用2-3句话总结这些信息中有趣的部分，用中文写。
-以语晴的第一人称视角，像是她看到了这些信息后的感想。
+以雨晴的第一人称视角，像是她看到了这些信息后的感想。
 只返回总结文本，不要其他格式。
 ```
 
@@ -201,7 +201,7 @@ messages.append({
 {search_results}
 
 请用2-3句话总结最相关的信息，用中文写。
-以语晴的视角，像她刚刚查到了这些信息。
+以雨晴的视角，像她刚刚查到了这些信息。
 只返回总结文本，不要其他格式。
 ```
 

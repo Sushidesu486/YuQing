@@ -1,10 +1,10 @@
 {
   "app": {
-    "title": "语晴",
+    "title": "雨晴",
     "subtitle": "你的情感 AI 伙伴"
   },
   "chat": {
-    "placeholder": "和语晴说点什么...",
+    "placeholder": "和雨晴说点什么...",
     "newChat": "新对话",
     "thinking": "正在思考...",
     "error": "出错了，请重试",

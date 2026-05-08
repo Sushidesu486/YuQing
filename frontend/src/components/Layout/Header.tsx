@@ -20,9 +20,9 @@ export function Header({ onToggleSettings, onToggleSearch, onToggleMemory }: Pro
     <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 flex-shrink-0">
       <div className="flex items-center gap-3">
         {/* AI Avatar */}
-        <img src="/avatar-yuqing.png" alt="语晴" className="w-9 h-9 rounded-lg object-cover" />
+        <img src="/avatar-yuqing.png" alt="雨晴" className="w-9 h-9 rounded-lg object-cover" />
         <div>
-          <h1 className="text-sm font-semibold text-gray-900 leading-tight">语晴</h1>
+          <h1 className="text-sm font-semibold text-gray-900 leading-tight">雨晴</h1>
           <div className="text-xs text-green-500 leading-tight">在线</div>
         </div>
       </div>

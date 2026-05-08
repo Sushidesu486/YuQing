@@ -100,7 +100,7 @@ CREATE TABLE messages (
 
 ### 2.3 memories — 长期记忆
 
-核心表，存储语晴关于用户的所有长期记忆。与 mem0/ChromaDB 双写（mem0 负责向量检索，MySQL 负责 CRUD + 衰减计算）。
+核心表，存储雨晴关于用户的所有长期记忆。与 mem0/ChromaDB 双写（mem0 负责向量检索，MySQL 负责 CRUD + 衰减计算）。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -180,9 +180,9 @@ CREATE INDEX idx_memory_type ON memories (memory_type);
 
 ---
 
-### 2.4 self_memories — 语晴的自我记忆
+### 2.4 self_memories — 雨晴的自我记忆
 
-存储语晴关于自身的认知（兴趣、经历、观点、习惯），在 system prompt 中注入到"你记得的自己"区段，动态替代 YAML 中写死的 interests 列表。
+存储雨晴关于自身的认知（兴趣、经历、观点、习惯），在 system prompt 中注入到"你记得的自己"区段，动态替代 YAML 中写死的 interests 列表。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -250,9 +250,9 @@ CREATE TABLE IF NOT EXISTS emotion_snapshots (
 
 ---
 
-### 2.6 yuqing_mood — 语晴心情当前值（单例）
+### 2.6 yuqing_mood — 雨晴心情当前值（单例）
 
-存储语晴心情的三维状态机当前值，`id=1` 单例行（CHECK 约束强制）。
+存储雨晴心情的三维状态机当前值，`id=1` 单例行（CHECK 约束强制）。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -280,7 +280,7 @@ CREATE TABLE yuqing_mood (
 
 ---
 
-### 2.7 yuqing_mood_log — 语晴心情变化日志
+### 2.7 yuqing_mood_log — 雨晴心情变化日志
 
 记录每次心情更新的历史，用于心情趋势追踪和调试。
 
@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS yuqing_mood_log (
 
 ### 2.8 proactive_messages — 主动消息记录
 
-记录语晴主动发送的消息及其触发原因。
+记录雨晴主动发送的消息及其触发原因。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -435,7 +435,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 ### 2.12 knowledge_items — 信息检索知识条目
 
-存储语晴通过 Tavily API 主动/被动检索到的知识，带时效性。7 天后自动过期，不再注入 system prompt。
+存储雨晴通过 Tavily API 主动/被动检索到的知识，带时效性。7 天后自动过期，不再注入 system prompt。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -738,7 +738,7 @@ SELECT memory_type, content, importance, valence, confidence
 FROM memories WHERE importance >= 0.7 AND is_consolidated = 0
 ORDER BY importance DESC;
 
--- 查看语晴心情趋势
+-- 查看雨晴心情趋势
 SELECT warmth, openness, energy, mood_label, created_at
 FROM yuqing_mood_log ORDER BY created_at DESC LIMIT 20;
 
@@ -770,7 +770,7 @@ WHERE conversation_id = ?
   AND content LIKE ?
 ORDER BY created_at DESC LIMIT ? OFFSET ?;
 
--- 查看语晴的自我记忆分布
+-- 查看雨晴的自我记忆分布
 SELECT memory_type, COUNT(*) AS cnt, AVG(importance) AS avg_imp
 FROM self_memories WHERE is_consolidated = 0
 GROUP BY memory_type;
@@ -792,7 +792,7 @@ FROM knowledge_items
 WHERE expires_at <= NOW()
 ORDER BY expires_at DESC;
 
--- 查看语晴当前的自我叙事
+-- 查看雨晴当前的自我叙事
 SELECT `key`, value FROM app_settings WHERE `key` = 'self_narrative';
 
 -- 查看记忆纠正记录（被标记失效的记忆）

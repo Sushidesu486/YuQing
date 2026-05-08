@@ -144,7 +144,7 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
               <span className={`text-xs px-1.5 py-0.5 rounded ${
                 msg.role === 'user' ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'
               }`}>
-                {msg.role === 'user' ? '你' : '语晴'}
+                {msg.role === 'user' ? '你' : '雨晴'}
               </span>
               <span className="text-xs text-gray-400">{formatDate(msg.created_at)}</span>
             </div>

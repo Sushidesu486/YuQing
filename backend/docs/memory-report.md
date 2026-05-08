@@ -19,7 +19,7 @@ YuQing 的认知系统由 6 个子系统组成，共同实现"有记忆、有情
 │                                                          │
 │  Phase 1  情绪分析 (emotion.py)                          │
 │  Phase 2  用户情绪上下文                                  │
-│  Phase 2.5 语晴自身心情更新 (mood.py)                     │
+│  Phase 2.5 雨晴自身心情更新 (mood.py)                     │
 │  Phase 3  分层记忆召回 (memory.py ← mem0 + MySQL)        │
 │  Phase 4  人格系统提示构建 (personality.py + jinja2)      │
 │  Phase 5  存储用户消息到 MySQL                            │
@@ -50,9 +50,9 @@ YuQing 的认知系统由 6 个子系统组成，共同实现"有记忆、有情
 | **短期记忆** | MySQL `messages` 表 | 最近 N 条对话（默认 20 条） |
 | **长期记忆（向量）** | BGE-base-zh-v1.5 本地嵌入 | 语义检索、记忆去重、聚类合并、sticker 匹配 |
 | **长期记忆（结构化）** | MySQL `memories` 表 | 7 种记忆类型、元数据、衰减计算、CRUD |
-| **自我记忆** | MySQL `self_memories` 表 | 语晴自身的兴趣/经历认知 |
+| **自我记忆** | MySQL `self_memories` 表 | 雨晴自身的兴趣/经历认知 |
 | **情绪快照** | MySQL `emotion_snapshots` | 情绪跟踪、主动消息触发 |
-| **语晴心情** | MySQL `yuqing_mood_log` | 三维心情状态（温暖/开放/活力） |
+| **雨晴心情** | MySQL `yuqing_mood_log` | 三维心情状态（温暖/开放/活力） |
 | **用户偏好** | MySQL `user_preferences` | 沟通风格学习、置信度加权 |
 | **人格配置** | YAML + MySQL `personality_config` | 人格定义 + 运行时覆盖 |
 
@@ -83,7 +83,7 @@ YuQing 的认知系统由 6 个子系统组成，共同实现"有记忆、有情
 | `emotion` | 情绪记忆（用户情感模式） | 影响 mood 系统 | "用户被质疑能力时会愤怒" |
 | `preference` | 用户偏好 | 转化为行为规则 | "用户不喜欢被说教" |
 | `procedural` | 行为互动模式 | 转化为行为规则 | "用户习惯晚上聊天" |
-| `self_reflection` | 语晴的自我记忆 | 替代 YAML interests | "和shouss聊了ACG话题，发现对老番有共鸣" |
+| `self_reflection` | 雨晴的自我记忆 | 替代 YAML interests | "和shouss聊了ACG话题，发现对老番有共鸣" |
 
 ---
 
@@ -163,7 +163,7 @@ memory_manager.extract_and_store_memories()
   │   _extract_via_mem0()                             │
   │                                                   │
   │   Step 1: LLM 分类提取                            │
-  │   构造文本: "用户: {msg}\n语晴: {resp}"          │
+  │   构造文本: "用户: {msg}\n雨晴: {resp}"          │
   │   调用 MEMORY_CLASSIFY_PROMPT_ZH                  │
   │   → [{content, memory_type, importance,           │
   │       valence, confidence}, ...]                  │
@@ -433,7 +433,7 @@ arousal:   0.0 ─────────── 0.5 ─────────
 label: happy | sad | angry | anxious | calm | excited | tired | neutral
 ```
 
-### 9.2 语晴心情系统
+### 9.2 雨晴心情系统
 
 独立于用户情绪的**三维心情状态**:
 
@@ -514,7 +514,7 @@ CREATE TABLE IF NOT EXISTS self_memories (
 );
 ```
 
-存储语晴关于自身的认知（兴趣发展、经历积累），在 prompt 中注入到"你的兴趣"区段替代 YAML 写死的列表。
+存储雨晴关于自身的认知（兴趣发展、经历积累），在 prompt 中注入到"你的兴趣"区段替代 YAML 写死的列表。
 
 ### 迁移映射
 

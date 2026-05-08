@@ -5,7 +5,7 @@
 
 ## 概述
 
-语晴能在对话中发送表情包图片，表情包的选择完全由 BGE 语义后处理决定，不占用 LLM token。用户也能通过表情包选择器发送表情包。
+雨晴能在对话中发送表情包图片，表情包的选择完全由 BGE 语义后处理决定，不占用 LLM token。用户也能通过表情包选择器发送表情包。
 
 ## 架构
 
@@ -81,12 +81,12 @@ STICKER_DEFINITIONS = [
 2. 弹出面板显示所有可用 sticker 的 PNG 预览
 3. 选择后发送 `/category/name` 格式的文本消息
 4. 后端 `chat.py` 检测到 sticker 格式 → 存储 `content_type='sticker'` → 返回 SSE sticker 事件
-5. 同时发送描述性文本触发语晴回复
+5. 同时发送描述性文本触发雨晴回复
 
 ## SSE 事件
 
 ```json
-// sticker 事件（语晴发送）
+// sticker 事件（雨晴发送）
 {"type": "sticker", "name": "happy/smile_blink", "conversation_id": "xxx"}
 
 // sticker 事件（用户发送，后端 echo）

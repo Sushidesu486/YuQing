@@ -130,6 +130,7 @@
 | `self_experience` | 个人经历 | "我以前也学过这个"、"那个我看过了" |
 | `self_opinion` | 观点和态度 | "我觉得这没什么"、"我认为" |
 | `self_habit` | 习惯和倾向 | "我一般不..."、"我习惯..." |
+| `self_reflection` | 内心独白 | 每轮对话后的私人反思，捕捉真实心理活动 |
 
 **分层注入机制**
 
@@ -397,6 +398,31 @@ System Prompt 注入工具描述 → LLM 流式生成 tool_calls
 - 过期知识不再注入 system prompt
 - 存储在独立 knowledge_items 表，与记忆系统分离
 
+### 12. 今日对话感知（Daily Awareness）
+
+雨晴能看到今天完整的对话轨迹，不会在同一天内反复提起同一个话题。
+
+**今日对话全记录**
+- 每次请求在 system prompt 顶部注入今天的完整对话日志
+- 压缩格式：每轮「用户: ... | 你: ...」，40 字截断，最多 50 轮
+- 按时间正序排列（最早→最晚），像翻看聊天记录
+- 零额外 LLM 调用，纯 SQL 查询
+
+**今日话题防重复**
+- 加载今天所有 assistant 回复作为「已聊过的话题」
+- 动态 prompt 强制禁止主动再提这些话题
+- 配合 stable prompt 规则「不要在同一天反复提起同一个话题」
+
+### 13. 内部独白（Inner Monologue）
+
+雨晴在每轮对话后有属于自己的私人内心时刻。
+
+- Phase 8.5：回复完成后，后台触发一次独立的 LLM 调用
+- 她反思刚才的对话：真正在想什么、学到了什么、感受到了什么
+- 独白存入 `self_reflection` 记忆，参与后续 BGE 语义召回
+- fire-and-forget 架构：不阻塞对话流程，不设超时
+- 下一轮对话时注入动态 prompt「你最近的内心活动」
+
 ---
 
 ## 快速开始
@@ -555,7 +581,8 @@ yuqing/
 | `app_settings` | 应用设置（KV）— 含自我叙事缓存、身份 hash 基线、检索时间戳 |
 | `user_preferences` | 用户学习到的偏好 |
 | `knowledge_items` | 信息检索知识条目（带时效性，7 天过期，RSS guid 去重） |
-| `memory_links` | 记忆关联链接（co_occurrence/consolidated，激活传播用） |
+| `memory_links` | 记忆关联链接（co_occurrence/consolidated/semantic，激活传播 + 动态强度） |
+| `personality_evolution` | 人格演化审计日志（Reflect-Evolve 的 before/after/reasoning） |
 
 ---
 
@@ -571,6 +598,7 @@ yuqing/
 | `MEMORY_DECAY_HALF_LIFE_DAYS` | 90 | 记忆重要性减半天数 |
 | `MEMORY_CONSOLIDATION_MIN_COUNT` | 20 | 触发巩固的最低记忆数 |
 | `MEMORY_DORMANT_DAYS` | 30 | 休眠记忆判定天数 |
+| `INNER_MONOLOGUE_ENABLED` | true | 是否启用内部独白（Phase 8.5） |
 | `MEMORY_SLEEP_CLEANUP_HOUR` | 7 | 睡眠清理执行时间（小时） |
 | `SLEEP_DOWNSCALE_FACTOR` | 0.03 | 突触归一化缩小系数 |
 | `SLEEP_REPLAY_STRENGTHEN` | 0.05 | 选择性 Replay 强化幅度 |

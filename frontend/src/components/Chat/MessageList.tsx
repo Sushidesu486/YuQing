@@ -70,8 +70,8 @@ export function MessageList({ messages, isStreaming, highlightMessageId }: Props
     return (
       <div className="flex-1 flex items-center justify-center chat-bg">
         <div className="text-center text-gray-400">
-          <img src="/avatar-yuqing.png" alt="语晴" className="w-16 h-16 mx-auto mb-3 rounded-2xl object-cover shadow-lg" />
-          <div className="text-sm">语晴已上线</div>
+          <img src="/avatar-yuqing.png" alt="雨晴" className="w-16 h-16 mx-auto mb-3 rounded-2xl object-cover shadow-lg" />
+          <div className="text-sm">雨晴已上线</div>
         </div>
       </div>
     );
@@ -113,7 +113,7 @@ export function MessageList({ messages, isStreaming, highlightMessageId }: Props
       {isStreaming && (
         <div className="flex justify-start mb-3 px-4">
           <div className="max-w-[65%] flex items-end gap-2">
-            <img src="/avatar-yuqing.png" alt="语晴" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
+            <img src="/avatar-yuqing.png" alt="雨晴" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
             <div className="bg-white rounded-lg px-3 py-2 shadow-sm">
               <div className="flex space-x-1">
                 <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
