@@ -604,7 +604,7 @@ class YuQingMoodTracker:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO yuqing_mood_log "
-                    "(id, warmth, openness, energy, label, trigger_type, trigger_detail) "
+                    "(id, warmth, openness, energy, mood_label, trigger_type, trigger_summary) "
                     "VALUES (%s, %s, %s, %s, %s, 'monologue', %s)",
                     (_generate_id(), round(new_warmth, 4), round(new_openness, 4),
                      round(new_energy, 4),

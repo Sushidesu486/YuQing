@@ -1,7 +1,7 @@
 # YuQing 数据库技术文档
 
 > 数据库: MySQL 9 | 字符集: utf8mb4 | 引擎: InnoDB
-> 最后更新: 2026-05-06
+> 最后更新: 2026-05-09
 
 ---
 
@@ -11,21 +11,24 @@
 conversations ──┬── 1:N ── messages
                 ├── 1:N ── emotion_snapshots
                 ├── 1:N ── yuqing_mood_log
-                └── 1:N ── proactive_messages
+                ├── 1:N ── proactive_messages
+                └── 1:N ── memories (source_conversation_id)
 
 messages ──────── 1:N ── memories (source_message_id)
 
-conversations ─── 1:N ── memories (source_conversation_id)
-conversations ─── 1:N ── self_memories (source_conversation_id)
+memories ──────── 1:N ── memory_links (source_id / target_id)
 
 单例表 (无外键):
-  personality_config  (id=1, config JSON)
-  yuqing_mood         (id=1, 三维心情当前值)
-  app_settings        (key-value)
+  personality_config    (id=1, config JSON)
+  app_settings          (key-value)
+
+审计日志:
+  personality_evolution (trigger_type, snapshot_before/after)
 
 独立表:
-  user_preferences    (自增 PK, preference_key UNIQUE)
-  knowledge_items     (独立表，带 expires_at 时效性)
+  user_preferences      (自增 PK, preference_key UNIQUE)
+  knowledge_items       (独立表，带 expires_at 时效性)
+  memory_links          (source_id → target_id, link_type + strength)
 ```
 
 ---
@@ -137,7 +140,7 @@ CREATE TABLE messages (
 | `emotion` | 情绪反应模式 | 影响 mood 系统 |
 | `preference` | 用户偏好 | 转化为行为规则 |
 | `procedural` | 行为互动模式 | 转化为行为规则 |
-| `self_reflection` | (不存此表) | — |
+| `self_reflection` | 雨晴的内心独白 | 动态 prompt「你最近的内心活动」+ 驱动 mood 更新 |
 
 **category → memory_type 迁移映射**:
 
@@ -292,8 +295,8 @@ CREATE TABLE yuqing_mood (
 | `openness` | FLOAT | NOT NULL | 开放度快照 |
 | `energy` | FLOAT | NOT NULL | 活力度快照 |
 | `mood_label` | VARCHAR(32) | NOT NULL | 心情标签（guarded/withdrawn/relaxed/softened/vulnerable） |
-| `trigger_type` | VARCHAR(32) | NULL | 触发类型（conversation/absence_decay/return_bump/） |
-| `trigger_summary` | TEXT | NULL | 触发摘要 |
+| `trigger_type` | VARCHAR(32) | NULL | 触发类型（conversation/absence_decay/return_bump/monologue） |
+| `trigger_summary` | TEXT | NULL | 触发摘要（monologue 类型时为独白内容前 200 字） |
 | `created_at` | DATETIME | NOT NULL, DEFAULT NOW | 记录时间 |
 
 **索引**: `idx_mood_time (created_at)` — 按时间查询心情变化历史。

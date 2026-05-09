@@ -190,6 +190,14 @@
 - [x] BGE 进度条静音 + 日志彩色层级（ColoredFormatter）
 - [x] MEMORY_RECALL_COUNT 5→10
 - [x] 独白改用流式 + 同时捕获 content/reasoning_content
+- [x] BGE 召回与今日记忆分离：正常查询 BGE 只搜 >24h（排除今日），时间查询不受限
+- [x] BGE 候选池 200→100（排除今日后候选池自然缩小）
+- [x] 今日记忆质量过滤：importance ≥ 0.15 + confidence ≥ 0.4（排除垃圾/低置信度）
+- [x] 独白驱动 YuQing mood 更新：基于 valence + 内容关键词，EMA 调整 warmth/openness/energy
+- [x] emotion 类型记忆提取关闭（EMOTION_MEMORY_ENABLED=False，独白替代）
+- [x] 工作记忆 10→5（today_exchange_log 已覆盖全天对话）
+- [x] 三层防幻觉护栏：prompt 禁止编造不存在的事件/话题
+- [x] 贴纸显示修复：applyCleanedContent 过滤 /sticker 行
 
 ### 已知未修复问题
 - [ ] `messages` 表：`prompt_tokens`/`completion_tokens` 列从未写入（litellm streaming 不暴露 token 用量）

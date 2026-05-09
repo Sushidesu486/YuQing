@@ -65,16 +65,26 @@ The central orchestrator is `backend/app/core/cognitive.py` — a 10-phase pipel
 **Key modules** (`backend/app/core/`):
 | File | Role |
 |------|------|
-| `memory.py` | BGE embedding + MySQL memory system (largest file, ~2000+ lines) |
-| `personality.py` | YAML personality + Jinja2 prompt generation |
-| `mood.py` | YuQing's 3D mood tracker (warmth/openness/energy) |
-| `emotion.py` | User emotion analysis (V-A model) |
-| `temporal.py` | Time awareness (session gaps, time-of-day, tenure) |
+| `memory.py` | BGE embedding + MySQL memory system (largest file, ~2900+ lines). Handles recall (BGE >24h + today full injection), extraction (LLM + dedup), consolidation, sleep cleanup, inner monologue |
+| `personality.py` | YAML personality + Jinja2 prompt generation (stable/dynamic split) |
+| `mood.py` | YuQing's 3D mood tracker (warmth/openness/energy); updated via conversation keywords AND inner monologue signals |
+| `emotion.py` | User emotion analysis (V-A model) + cross-session profile |
+| `temporal.py` | Time awareness (session gaps, time-of-day, tenure) + relationship stage |
 | `proactive.py` | Background proactive messaging (4 triggers) |
 | `self_cognition.py` | Self-narrative synthesis + Reflect-Evolve personality evolution (audit log: `personality_evolution` table) |
 | `info_retrieval.py` | Tavily + RSS knowledge retrieval |
 | `tools/` | Tool registry + 4 built-in tools (recall_memories, search_web, read_latest_articles, search_knowledge) |
 | `llm.py` | litellm wrapper (streaming/non-streaming) |
+
+## Memory recall architecture
+
+**BGE semantic search** only scans memories >24h (100 candidates from `CURDATE()`). Today's memories are injected in full via a separate query with quality filter (`importance >= 0.15, confidence >= 0.4`). This avoids recall contamination and keeps BGE on historical data only.
+
+**Recall pipeline** (`build_context`): BGE semantic (20) → pinned facts (4) → activation spread (~15) → dormant (2) → today's full injection (≤50). Today's memories bypass per-type caps. `today_exchange_log` + `today_topics` provide full conversational awareness.
+
+**Inner monologue** (Phase 8.5): fire-and-forget `asyncio.create_task`. On success, stores `self_reflection` memory AND drives YuQing's mood update via `mood.apply_monologue()`.
+
+**Memory types**: user (fact/event/episodic/emotion/preference/procedural) + self (self_interest/self_experience/self_opinion/self_habit/self_reflection). `EMOTION_MEMORY_ENABLED=False` (inner monologue provides richer emotional data).
 
 ## Frontend architecture
 

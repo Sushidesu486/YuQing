@@ -423,6 +423,25 @@ System Prompt 注入工具描述 → LLM 流式生成 tool_calls
 - fire-and-forget 架构：不阻塞对话流程，不设超时
 - 下一轮对话时注入动态 prompt「你最近的内心活动」
 
+**独白驱动心情更新**
+- 独白完成后，基于 self-assessed valence + 内容关键词，EMA 驱动 warmth/openness/energy 更新
+- 比纯关键词启发式更准确反映雨晴的真实情绪状态
+- 存入 `yuqing_mood_log` 表（trigger_type='monologue'）
+
+### 14. 记忆召回架构（BGE / 今日分离）
+
+24h 内记忆和更早的记忆走完全独立的路径。
+
+**历史 (>24h) 记忆 — BGE 语义召回**
+- 候选池 100 条，按 importance DESC 排序后 BGE cosine similarity
+- Pinned facts（importance ≥ 0.7）强制注入
+- 激活传播 + 休眠唤醒补充
+
+**今日 (≤24h) 记忆 — 全量注入**
+- 今日所有记忆全量注入 context，绕过 BGE 搜索和分层上限
+- 质量过滤：importance ≥ 0.15 + confidence ≥ 0.4（排除垃圾/低置信度）
+- 今日对话全记录（exchange_log）+ 今日话题（topics）互补：覆盖雨晴自己的发言轨迹
+
 ---
 
 ## 快速开始
