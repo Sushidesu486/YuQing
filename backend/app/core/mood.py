@@ -555,5 +555,71 @@ class YuQingMoodTracker:
 
         return "，".join(parts) if parts else None
 
+    async def apply_monologue(self, valence: float, content: str):
+        """Apply inner monologue emotional signals to YuQing's mood.
+
+        Uses the monologue's self-assessed valence and sentiment keywords
+        to gently adjust warmth/openness/energy.
+        """
+        mood = await self.get_current_mood(None)
+        if not mood:
+            return
+
+        delta_warmth = 0.0
+        delta_openness = 0.0
+        delta_energy = 0.0
+
+        # Valence-driven adjustments
+        if valence > 0.3:
+            delta_energy += 0.05
+            delta_openness += 0.02
+        elif valence < -0.3:
+            delta_warmth += 0.03   # caring response to negative events
+            delta_openness -= 0.02  # slightly more guarded
+
+        # Content-driven sentiment
+        content_lower = content.lower()
+        sad_keywords = ["难过", "不高兴", "低落", "伤心", "生气", "焦虑", "不舒服"]
+        happy_keywords = ["开心", "兴奋", "高兴", "期待", "温暖"]
+        if any(kw in content_lower for kw in sad_keywords):
+            delta_warmth += 0.03
+            delta_energy -= 0.02
+        if any(kw in content_lower for kw in happy_keywords):
+            delta_energy += 0.05
+
+        # Apply with gentle EMA
+        alpha = settings.YUQING_MOOD_EMA_ALPHA * 0.7
+        new_warmth = float(mood["warmth"]) + delta_warmth * alpha
+        new_openness = float(mood["openness"]) + delta_openness * alpha
+        new_energy = float(mood["energy"]) + delta_energy * alpha
+
+        # Clamp 0.01-0.99
+        new_warmth = max(0.01, min(0.99, new_warmth))
+        new_openness = max(0.01, min(0.99, new_openness))
+        new_energy = max(0.01, min(0.99, new_energy))
+
+        # Store log entry
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO yuqing_mood_log "
+                    "(id, warmth, openness, energy, label, trigger_type, trigger_detail) "
+                    "VALUES (%s, %s, %s, %s, %s, 'monologue', %s)",
+                    (_generate_id(), round(new_warmth, 4), round(new_openness, 4),
+                     round(new_energy, 4),
+                     get_yuqing_mood_label(new_warmth, new_openness, new_energy),
+                     content[:200]),
+                )
+
+        label = get_yuqing_mood_label(new_warmth, new_openness, new_energy)
+        logger.info(
+            f"Mood ← monologue (valence={valence:+.2f}) | "
+            f"w={float(mood['warmth']):.3f}→{new_warmth:.3f} "
+            f"o={float(mood['openness']):.3f}→{new_openness:.3f} "
+            f"e={float(mood['energy']):.3f}→{new_energy:.3f} | "
+            f"label={label}"
+        )
+
 
 yuqing_mood_tracker = YuQingMoodTracker()

@@ -24,10 +24,11 @@ class Settings(BaseSettings):
     # Application
     LANGUAGE: str = "zh"
     USER_NAME: str = "shouss"
-    MAX_CONTEXT_MESSAGES: int = 10
+    MAX_CONTEXT_MESSAGES: int = 5   # today_exchange_log 已覆盖全天对话
     MEMORY_RECALL_COUNT: int = 10
     AUTO_MEMORY_EXTRACTION: bool = True
     INNER_MONOLOGUE_ENABLED: bool = True        # Phase 8.5: 雨晴内心独白（记忆提取前）
+    EMOTION_MEMORY_ENABLED: bool = False         # 关闭 emotion 类型记忆提取（独白替代）
 
     # Memory layered injection
     MEMORY_FACT_TOP_K: int = 8
@@ -39,6 +40,8 @@ class Settings(BaseSettings):
     MEMORY_TEMPORAL_ORDERED_INJECTION: bool = True
     MEMORY_TODAY_INJECT_ALL: bool = True   # 全量注入当日记忆（不受分层上限约束）
     MEMORY_TODAY_MAX: int = 50             # 当日记忆软上限
+    MEMORY_TODAY_IMPORTANCE_MIN: float = 0.15   # 今日记忆最低 importance
+    MEMORY_TODAY_CONFIDENCE_MIN: float = 0.4    # 今日记忆最低 confidence
     SELF_MEMORY_ENABLED: bool = True
     MEMORY_CLASSIFY_ENABLED: bool = True
 

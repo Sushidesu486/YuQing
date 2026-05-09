@@ -495,7 +495,7 @@ class MemoryManager:
                     temporal_memory_hint = f"用户问的是过去的事，以下记忆来自 {created_after.month}月{created_after.day}日 之后："
             temporal_memory_hint += "请按时间线叙述，你可以说'那天你先提到了X，后来又说了Y'。"
 
-        # 3. Ensure pinned facts (importance >= 0.8) are always included
+        # 3. Ensure pinned facts (importance >= 0.8) are always included (history only)
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -503,6 +503,7 @@ class MemoryManager:
                     "SELECT id, content, memory_type, importance, valence, confidence "
                     "FROM memories WHERE importance >= %s AND is_invalid = 0 "
                     "AND (memory_type NOT LIKE 'self_%%' OR memory_type IS NULL) "
+                    "AND created_at < CURDATE() "
                     "ORDER BY importance DESC LIMIT 10",
                     (settings.MEMORY_PINNED_FACTS_THRESHOLD,)
                 )
@@ -537,7 +538,7 @@ class MemoryManager:
             if not any(r["id"] == d["id"] for r in recalled):
                 recalled.append(d)
 
-        # 5.5. Today's memories — inject all (bypass semantic search limits)
+        # 5.5. Today's memories — inject all (bypass semantic search limits, with quality filter)
         if settings.MEMORY_TODAY_INJECT_ALL:
             today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             async with pool.acquire() as conn:
@@ -545,10 +546,13 @@ class MemoryManager:
                     await cur.execute(
                         "SELECT id, content, memory_type, importance, valence, confidence, access_count "
                         "FROM memories WHERE is_invalid = 0 "
-                        "AND memory_type NOT LIKE 'self_%%' "
+                        "AND (memory_type NOT LIKE 'self_%%' OR memory_type = 'self_reflection') "
+                        "AND importance >= %s AND confidence >= %s "
                         "AND created_at >= %s "
                         "ORDER BY created_at DESC LIMIT %s",
-                        (today_start, settings.MEMORY_TODAY_MAX),
+                        (settings.MEMORY_TODAY_IMPORTANCE_MIN,
+                         settings.MEMORY_TODAY_CONFIDENCE_MIN,
+                         today_start, settings.MEMORY_TODAY_MAX),
                     )
                     today_rows = await cur.fetchall()
             existing_ids = {r["id"] for r in recalled}
@@ -709,10 +713,13 @@ class MemoryManager:
                     await cur.execute(
                         "SELECT id, content, memory_type, importance, valence, confidence, access_count "
                         "FROM memories WHERE is_invalid = 0 "
-                        "AND memory_type NOT LIKE 'self_%%' "
+                        "AND (memory_type NOT LIKE 'self_%%' OR memory_type = 'self_reflection') "
+                        "AND importance >= %s AND confidence >= %s "
                         "AND created_at >= %s "
                         "ORDER BY created_at DESC LIMIT %s",
-                        (today_start, cfg.MEMORY_TODAY_MAX),
+                        (cfg.MEMORY_TODAY_IMPORTANCE_MIN,
+                         cfg.MEMORY_TODAY_CONFIDENCE_MIN,
+                         today_start, cfg.MEMORY_TODAY_MAX),
                     )
                     today_rows = await cur.fetchall()
             existing_ids = {r["id"] for r in search_results + pinned_clean + spread_memories + dormant}
@@ -1355,10 +1362,24 @@ class MemoryManager:
             except Exception:
                 pass
             logger.info(f"Inner monologue [{mem_id[:8]}]: {monologue_text[:80]}")
+            # Apply monologue signals to YuQing's mood
+            try:
+                await self._apply_monologue_to_mood(monologue_text, valence)
+            except Exception as e:
+                logger.debug(f"Monologue→mood failed: {e}")
         except Exception as e:
             logger.debug(f"Failed to store inner monologue: {e}")
 
         return {"monologue": monologue_text, "valence": valence}
+
+    async def _apply_monologue_to_mood(self, monologue_text: str, valence: float):
+        """Apply inner monologue emotional signals to YuQing's mood system.
+
+        Uses the monologue's self-assessed valence and sentiment keywords
+        to adjust warmth/openness/energy with a gentle EMA.
+        """
+        from app.core.mood import yuqing_mood_tracker
+        await yuqing_mood_tracker.apply_monologue(valence, monologue_text)
 
     async def extract_and_store_memories(
         self,
@@ -1461,6 +1482,10 @@ class MemoryManager:
             memory_type = _legacy_map.get(memory_type, memory_type)
             importance = float(mem.get("importance", 0.5))
             valence = float(mem.get("valence", 0.0))
+
+            # Skip emotion memories if disabled (inner monologue provides richer data)
+            if memory_type == "emotion" and not settings.EMOTION_MEMORY_ENABLED:
+                continue
 
             # Keyword-based importance safety net (both ZH and EN)
             _trivial_keywords = ["天气", "随便", "没啥", "哈哈", "嗯嗯", "不错啊", "还行", "没事", "无所谓",
@@ -1729,13 +1754,13 @@ class MemoryManager:
                 for r in rows
             ]
 
-        # Load candidate memories (limit to 200 for performance)
+        # Load candidate memories (limit to 100 for performance; today excluded, injected separately)
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 sql = (
                     "SELECT id, content, memory_type, importance, valence, confidence, access_count "
                     "FROM memories WHERE is_invalid = 0 AND importance > 0.05 "
-                    "AND memory_type NOT LIKE 'self_%%' "
+                    "AND (memory_type NOT LIKE 'self_%%' OR memory_type = 'self_reflection') "
                 )
                 params: tuple = ()
                 if created_after:
@@ -1744,7 +1769,10 @@ class MemoryManager:
                 if created_before:
                     sql += "AND created_at < %s "
                     params = params + (created_before,)
-                sql += "ORDER BY importance DESC LIMIT 200"
+                if not created_after and not created_before:
+                    # Normal query: today's memories are injected in full, BGE only searches history
+                    sql += "AND created_at < CURDATE() "
+                sql += "ORDER BY importance DESC LIMIT 100"
                 await cur.execute(sql, params)
                 candidates = await cur.fetchall()
 
