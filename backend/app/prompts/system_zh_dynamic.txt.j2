@@ -38,8 +38,8 @@
 
 {% if recalled_memories.facts or recalled_memories.events %}
 ## 你记得的关于用户的事
-{% if recalled_memories.temporal_memory_hint %}{{ recalled_memories.temporal_memory_hint }}{% else %}这些是你确定知道的信息。{% endif %}不要猜测或编造其他内容——如果你不确定，直接说不知道。
-{% if tool_descriptions %}如果用户问的事情不在下面，使用 recall_memories 工具搜索。不要凭模糊印象回答。{% endif %}
+{% if recalled_memories.temporal_memory_hint %}{{ recalled_memories.temporal_memory_hint }}{% else %}这些是你确定知道的信息。{% endif %}不要猜测或编造其他内容——如果你不确定，直接说不知道。如果你看到的记忆里没有与当前话题相关的内容，你就是不知道——不要为了显得关心而编造一个不存在的事件。
+{% if tool_descriptions %}如果用户问的事情不在下面，使用 recall_memories 工具搜索。{% endif %}
 {% if recalled_memories.facts_by_date %}
 {% for date, items in recalled_memories.facts_by_date.items() %}### {{ date }}
 {% for item in items %}- [{{ item.time }}] {{ item.content }}

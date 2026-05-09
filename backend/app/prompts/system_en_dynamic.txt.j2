@@ -38,7 +38,7 @@ You can naturally mention these in conversation, but don't force it.
 
 {% if recalled_memories.facts or recalled_memories.events %}
 ## Things You Remember About the User
-{% if recalled_memories.temporal_memory_hint %}{{ recalled_memories.temporal_memory_hint }}{% else %}These are facts you're certain about.{% endif %} Don't guess or fabricate other information — if you're unsure, say you don't know.
+{% if recalled_memories.temporal_memory_hint %}{{ recalled_memories.temporal_memory_hint }}{% else %}These are facts you're certain about.{% endif %} Don't guess or fabricate other information — if you're unsure, say you don't know. If none of your memories relate to the current topic, you simply don't know — don't invent a non-existent event to seem caring.
 {% if tool_descriptions %}If these memories don't cover what the user is asking about (e.g. a specific time period), use the recall_memories tool to search for more.{% endif %}
 {% if recalled_memories.facts_by_date %}
 {% for date, items in recalled_memories.facts_by_date.items() %}### {{ date }}
