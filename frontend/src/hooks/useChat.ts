@@ -105,7 +105,7 @@ export function useChat() {
         const cleaned = fullContent
           .split(/\n\n+/)
           .map(p => p.trim())
-          .filter(p => p && !/^[.……]+$/.test(p))
+          .filter(p => p && !/^[.……]+$/.test(p) && !/^\/\w+(\/\w+)?$/.test(p))
           .join('\n\n')
           .trim();
         const isEmpty = !cleaned || ['...', '。。.', '嗯', '哦', '嗯...', '哦...', '。', '…'].includes(cleaned);
