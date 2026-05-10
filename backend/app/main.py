@@ -7,10 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
 from app.core.memory import _get_embedding_model
-from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
+from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive, posts
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task
 from app.core.memory import sleep_cleanup_background_task
+from app.core.poster import poster_background_task
 
 
 class ColoredFormatter(logging.Formatter):
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(proactive_background_task())
     info_task = asyncio.create_task(info_retrieval_background_task())
     cleanup_task = asyncio.create_task(sleep_cleanup_background_task())
+    poster_task = asyncio.create_task(poster_background_task())
 
     yield
 
@@ -72,7 +74,8 @@ async def lifespan(app: FastAPI):
     task.cancel()
     info_task.cancel()
     cleanup_task.cancel()
-    for t in (task, info_task, cleanup_task):
+    poster_task.cancel()
+    for t in (task, info_task, cleanup_task, poster_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -101,6 +104,7 @@ app.include_router(emotions.router)
 app.include_router(settings.router)
 app.include_router(preferences.router)
 app.include_router(proactive.router)
+app.include_router(posts.router)
 
 
 @app.get("/")

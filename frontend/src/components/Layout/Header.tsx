@@ -5,9 +5,10 @@ interface Props {
   onToggleSettings: () => void;
   onToggleSearch?: () => void;
   onToggleMemory?: () => void;
+  onTogglePoster?: () => void;
 }
 
-export function Header({ onToggleSettings, onToggleSearch, onToggleMemory }: Props) {
+export function Header({ onToggleSettings, onToggleSearch, onToggleMemory, onTogglePoster }: Props) {
   const { i18n } = useTranslation();
 
   const toggleLanguage = () => {
@@ -53,6 +54,17 @@ export function Header({ onToggleSettings, onToggleSearch, onToggleMemory }: Pro
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 00.659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 2.47a2.25 2.25 0 00-.659 1.59v1.19a2.25 2.25 0 01-2.25 2.25h-3.24a2.25 2.25 0 01-2.25-2.25v-1.19a2.25 2.25 0 00-.659-1.59L5 14.5m14 0h-4.25m-5.5 0H5" />
+            </svg>
+          </button>
+        )}
+        {onTogglePoster && (
+          <button
+            onClick={onTogglePoster}
+            className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+            title="Poster"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 12L3.269 3.125A59.769 59.769 0 0121.485 12 59.768 59.768 0 013.27 20.875L5.999 12zm0 0h7.5" />
             </svg>
           </button>
         )}
