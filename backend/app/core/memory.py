@@ -209,6 +209,7 @@ _BEHAVIOR_RULE_PATTERNS = [
 # ── Embedding model singleton ──
 
 _embedding_model = None
+_last_model_use: datetime = datetime.utcnow()
 
 _mem_embedding_cache: dict[str, dict] = {}   # {id: {"emb": vector, "content": str}}
 _mem_cache_valid = False
@@ -219,16 +220,53 @@ def _invalidate_mem_cache():
     _mem_cache_valid = False
 
 
+def _touch_model():
+    """Update last-use timestamp to prevent idle unload."""
+    global _last_model_use
+    _last_model_use = datetime.utcnow()
+
+
 def _get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         from sentence_transformers import SentenceTransformer
         from functools import partial
         model_name = settings.EMBEDDING_MODEL
+        logger.info(f"Loading embedding model: {model_name}...")
         _embedding_model = SentenceTransformer(model_name)
         _embedding_model.encode = partial(_embedding_model.encode, show_progress_bar=False)
         logger.info(f"Embedding model loaded: {model_name}")
+    _touch_model()
     return _embedding_model
+
+
+def unload_embedding_model():
+    """Release embedding model to free memory. Next use will auto-reload."""
+    global _embedding_model
+    if _embedding_model is not None:
+        import gc
+        import torch
+        logger.info("Unloading embedding model to free memory...")
+        del _embedding_model
+        _embedding_model = None
+        gc.collect()
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        logger.info("Embedding model released")
+
+
+def maybe_unload_idle_model():
+    """Check idle time and unload model if TTL exceeded."""
+    global _embedding_model, _last_model_use
+    if _embedding_model is None:
+        return
+    idle_seconds = (datetime.utcnow() - _last_model_use).total_seconds()
+    ttl = settings.EMBEDDING_MODEL_IDLE_TTL_MINUTES * 60
+    if idle_seconds > ttl:
+        logger.info(f"Embedding model idle for {idle_seconds:.0f}s (TTL={ttl}s), releasing...")
+        unload_embedding_model()
 
 
 def _cosine_similarity(a, b) -> float:

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
-from app.core.memory import _get_embedding_model
+from app.core.memory import _get_embedding_model, maybe_unload_idle_model
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task
@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(proactive_background_task())
     info_task = asyncio.create_task(info_retrieval_background_task())
     cleanup_task = asyncio.create_task(sleep_cleanup_background_task())
+    model_gc_task = asyncio.create_task(model_idle_gc_task())
 
     yield
 
@@ -72,7 +73,8 @@ async def lifespan(app: FastAPI):
     task.cancel()
     info_task.cancel()
     cleanup_task.cancel()
-    for t in (task, info_task, cleanup_task):
+    model_gc_task.cancel()
+    for t in (task, info_task, cleanup_task, model_gc_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -106,6 +108,18 @@ app.include_router(proactive.router)
 @app.get("/")
 async def root():
     return {"name": "YuQing", "version": "0.1.0"}
+
+
+async def model_idle_gc_task():
+    """Background task: release embedding model after idle TTL."""
+    await asyncio.sleep(120)  # wait 2 min after startup
+    from app.config import settings
+    while True:
+        try:
+            maybe_unload_idle_model()
+        except Exception as e:
+            logger.debug(f"Model GC check failed: {e}")
+        await asyncio.sleep(300)  # check every 5 minutes
 
 
 async def _init_identity_baseline():
