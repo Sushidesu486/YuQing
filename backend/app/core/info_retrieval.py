@@ -178,8 +178,11 @@ class InfoRetrievalEngine:
                     )
         return results
 
-    async def proactive_retrieval(self):
+    async def proactive_retrieval(self, force: bool = False):
         """从 RSS feeds 抓取新文章，去重后存储为知识条目。
+
+        Args:
+            force: 为 True 时跳过 cooldown 检查（手动触发时使用）
 
         去重策略：每个 feed 记录最新已处理的 guid，
         处理时从最新条目开始，遇到已知 guid 停止。
@@ -207,20 +210,21 @@ class InfoRetrievalEngine:
                     if row and row[0]:
                         last_guid = row[0]
 
-            # Fetch RSS (skip if DNS/connection failed in last hour)
-            cooldown_key = f"rss_cooldown_{hashlib.md5(feed_url.encode()).hexdigest()}"
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT value FROM app_settings WHERE `key` = %s",
-                        (cooldown_key,),
-                    )
-                    cooldown_row = await cur.fetchone()
-            if cooldown_row and cooldown_row[0]:
-                last_fail = datetime.fromisoformat(cooldown_row[0])
-                if (datetime.utcnow() - last_fail).total_seconds() < 3600:
-                    logger.debug(f"RSS fetch skipped (cooldown): {feed_url}")
-                    continue
+            # Fetch RSS (skip if DNS/connection failed in last hour, unless forced)
+            if not force:
+                cooldown_key = f"rss_cooldown_{hashlib.md5(feed_url.encode()).hexdigest()}"
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT value FROM app_settings WHERE `key` = %s",
+                            (cooldown_key,),
+                        )
+                        cooldown_row = await cur.fetchone()
+                if cooldown_row and cooldown_row[0]:
+                    last_fail = datetime.fromisoformat(cooldown_row[0])
+                    if (datetime.utcnow() - last_fail).total_seconds() < 3600:
+                        logger.info(f"RSS fetch skipped (cooldown): {feed_url}")
+                        continue
 
             items = await _fetch_rss_feed(feed_url)
             if not items:

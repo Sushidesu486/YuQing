@@ -53,7 +53,7 @@ async def trigger_info_retrieval():
     """手动触发一次主动信息检索（调试用）。"""
     from app.core.info_retrieval import InfoRetrievalEngine
     engine = InfoRetrievalEngine()
-    await engine.proactive_retrieval()
+    await engine.proactive_retrieval(force=True)
     # 返回最新知识条目
     knowledge = await engine.get_recent_knowledge(limit=10)
     return {"ok": True, "knowledge_count": len(knowledge), "knowledge": knowledge}
