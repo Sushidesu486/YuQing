@@ -86,7 +86,11 @@ async def _fetch_rss_feed(feed_url: str) -> list:
 
         return items
     except Exception as e:
-        logger.warning(f"RSS fetch/parse failed for {feed_url}: {e}")
+        err_msg = str(e).lower()
+        if any(kw in err_msg for kw in ("cannot connect", "nodename", "name or service", "timeout", "connection refused")):
+            logger.debug(f"RSS fetch unavailable for {feed_url}: {e}")
+        else:
+            logger.warning(f"RSS fetch/parse failed for {feed_url}: {e}")
         return []
 
 
@@ -203,9 +207,35 @@ class InfoRetrievalEngine:
                     if row and row[0]:
                         last_guid = row[0]
 
-            # Fetch RSS
+            # Fetch RSS (skip if DNS/connection failed in last hour)
+            cooldown_key = f"rss_cooldown_{hashlib.md5(feed_url.encode()).hexdigest()}"
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT value FROM app_settings WHERE `key` = %s",
+                        (cooldown_key,),
+                    )
+                    cooldown_row = await cur.fetchone()
+            if cooldown_row and cooldown_row[0]:
+                last_fail = datetime.fromisoformat(cooldown_row[0])
+                if (datetime.utcnow() - last_fail).total_seconds() < 3600:
+                    logger.debug(f"RSS fetch skipped (cooldown): {feed_url}")
+                    continue
+
             items = await _fetch_rss_feed(feed_url)
             if not items:
+                # Record failure timestamp for cooldown
+                try:
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                "INSERT INTO app_settings (`key`, value) VALUES (%s, %s) "
+                                "ON DUPLICATE KEY UPDATE value = %s",
+                                (cooldown_key, datetime.utcnow().isoformat(),
+                                 datetime.utcnow().isoformat()),
+                            )
+                except Exception:
+                    pass
                 continue
 
             new_count = 0
