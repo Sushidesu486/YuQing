@@ -376,7 +376,7 @@ def _time_ago(dt: datetime) -> str:
 
 
 async def _load_mem_cache():
-    """Load all valid user memories' embeddings into cache."""
+    """Load all valid user memories' embeddings into cache (batch-encoded)."""
     global _mem_cache_valid, _mem_embedding_cache
     try:
         model = _get_embedding_model()
@@ -389,13 +389,17 @@ async def _load_mem_cache():
                 "SELECT id, content FROM memories WHERE is_invalid = 0 AND is_consolidated = 0"
             )
             rows = await cur.fetchall()
+    if not rows:
+        _mem_cache_valid = True
+        return
+    contents = [r["content"] for r in rows]
+    embeddings = model.encode(contents, show_progress_bar=False)
     _mem_embedding_cache.clear()
-    for r in rows:
-        if r["content"] not in _mem_embedding_cache:
-            _mem_embedding_cache[r["id"]] = {
-                "emb": model.encode(r["content"]).tolist(),
-                "content": r["content"],
-            }
+    for r, emb in zip(rows, embeddings):
+        _mem_embedding_cache[r["id"]] = {
+            "emb": emb.tolist(),
+            "content": r["content"],
+        }
     _mem_cache_valid = True
     logger.info(f"Memory embedding cache loaded: {len(_mem_embedding_cache)} entries")
 
@@ -1567,9 +1571,9 @@ class MemoryManager:
         if settings.MEMORY_LINK_ENABLED and len(stored) >= 2:
             await self._create_co_occurrence_links(stored)
 
-        # Create semantic similarity links (S1)
+        # Create semantic similarity links (S1) — fire-and-forget to avoid blocking extraction
         if settings.MEMORY_LINK_ENABLED and settings.MEMORY_LINK_SEMANTIC_ENABLED and stored:
-            await self._create_semantic_links(stored)
+            asyncio.create_task(self._create_semantic_links(stored))
 
         # Apply memory corrections
         if corrections_raw:
@@ -2080,10 +2084,7 @@ class MemoryManager:
                     logger.debug(f"Failed to create co_occurrence link: {e}")
 
     async def _create_semantic_links(self, stored: list):
-        """为新记忆创建语义相似度链接（S1）。
-
-        使用 NumPy 批量 cosine similarity，复用 _mem_embedding_cache。
-        """
+        """为新记忆创建语义相似度链接（S1）。fire-and-forget，不阻塞提取。"""
         if not settings.MEMORY_LINK_SEMANTIC_ENABLED:
             return
 
@@ -2098,22 +2099,14 @@ class MemoryManager:
 
         logger.debug(f"BGE: encoding {len(stored)} new memories for semantic linking against {len(cache)} cached")
 
-        # Prepare candidate matrix from cache (sorted by importance for consistency)
-        # We sort by content hash for deterministic ordering, not importance,
-        # because we need consistent indexing
-        candidate_ids = []
-        candidate_embs = []
-        for mem_id, entry in cache.items():
-            # Skip memories that are in the current batch (not yet in cache at this point)
-            candidate_ids.append(mem_id)
-            candidate_embs.append(entry["emb"])
+        # Limit candidates to most recent max_compare entries
+        candidate_items = list(cache.items())[-max_compare:]
+        candidate_ids = [cid for cid, _ in candidate_items]
+        candidate_embs = [entry["emb"] for _, entry in candidate_items]
 
         if not candidate_embs:
             return
 
-        # Limit to max_compare most important (by cache size, importance sorting done at cache load)
-        # Actually we can't sort by importance from cache alone, so just take all
-        # (cache is already filtered to valid, non-consolidated memories)
         emb_matrix = np.array(candidate_embs, dtype=np.float32)
 
         total_links = 0
@@ -2121,20 +2114,16 @@ class MemoryManager:
             new_id = new_mem["id"]
             new_content = new_mem["content"]
 
-            # Get embedding from cache (was added during dedup/insert)
             cache_entry = cache.get(new_id)
             if cache_entry:
                 new_emb = cache_entry["emb"]
             else:
-                # Fallback: encode now (shouldn't happen if dedup ran)
                 model = _get_embedding_model()
                 new_emb = model.encode(new_content).tolist()
                 cache[new_id] = {"emb": new_emb, "content": new_content}
 
-            # Batch cosine similarity
             scores = _cosine_similarity_batch(new_emb, emb_matrix)
 
-            # Find candidates above threshold (exclude self)
             candidates = []
             for i, score in enumerate(scores):
                 if score < threshold:
@@ -2144,7 +2133,6 @@ class MemoryManager:
                     continue
                 candidates.append((cand_id, float(score)))
 
-            # Sort by score descending, take top max_links
             candidates.sort(key=lambda x: -x[1])
             for target_id, sim in candidates[:max_links]:
                 try:
@@ -2159,6 +2147,13 @@ class MemoryManager:
                     total_links += 1
                 except Exception as e:
                     logger.debug(f"Failed to create semantic link: {e}")
+
+        if total_links:
+            logger.debug(f"Semantic links created: {total_links}")
+        # Release numpy memory after large matmul
+        del emb_matrix
+        import gc
+        gc.collect()
 
     async def _strengthen_used_links(self, link_ids: set[str]):
         """S2: Batch strengthen links that were traversed during activation spreading."""
