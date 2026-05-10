@@ -730,12 +730,13 @@ yuqing/
 | GET | `/api/memories` | 所有长期记忆 |
 | GET | `/api/memories/search?q=xxx` | 语义搜索记忆 |
 | DELETE | `/api/memories/{id}` | 删除记忆 |
-| POST | `/api/memories/debug/recall` | 调试：传入消息，返回完整召回链路（语义搜索 → 激活传播 → 最终排序） |
-| GET | `/api/memories/debug/stats` | 调试：记忆系统状态概览（总数、链接数、类型分布） |
+| POST | `/api/memories/debug/recall` | 调试：传入消息，返回完整召回链路 |
+| GET | `/api/memories/debug/stats` | 调试：记忆系统状态概览 |
 | POST | `/api/memories/debug/cleanup` | 手动触发睡眠清理 |
-| GET | `/api/memories/links` | 所有记忆关联链接（调试面板用） |
-| POST | `/api/memories/trigger-info-retrieval` | 手动触发信息检索（调试用） |
+| GET | `/api/memories/links` | 所有记忆关联链接 |
+| POST | `/api/memories/trigger-info-retrieval` | 手动触发信息检索（RSS/Tavily） |
 | GET | `/api/knowledge` | 查看当前未过期的知识条目 |
+| POST | `/api/memory/unload-model` | 手动释放 BGE 嵌入模型内存（下次自动重载） |
 
 ### 情绪与心情
 
@@ -762,7 +763,14 @@ yuqing/
 | POST | `/api/personality/reset` | 重置为默认 |
 | GET | `/api/preferences` | 学习到的用户偏好 |
 
-### 其他
+### YuQing Poster（说说/朋友圈）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/posts` | 最近说说列表（`?limit=30`） |
+| POST | `/api/posts/generate` | 手动触发生成一条说说 |
+
+### 系统
 
 | 方法 | 路径 | 说明 |
 |------|------|------|

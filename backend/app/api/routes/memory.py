@@ -68,6 +68,14 @@ async def list_knowledge():
     return {"count": len(knowledge), "items": knowledge}
 
 
+@router.post("/memory/unload-model")
+async def unload_model():
+    """手动释放 BGE 嵌入模型内存。下次使用时自动重载。"""
+    from app.core.memory import unload_embedding_model
+    unload_embedding_model()
+    return {"ok": True, "message": "BGE embedding model released. Will auto-reload on next use."}
+
+
 class DebugRecallRequest(BaseModel):
     query: str
     conversation_id: Optional[str] = None
