@@ -456,6 +456,7 @@ class CognitiveProcessor:
                             try:
                                 await memory_manager._generate_inner_monologue(
                                     user_message, full_response, language,
+                                    conversation_id=conversation_id,
                                 )
                             except Exception as e:
                                 logger.debug(f"Inner monologue bg failed: {e}")
