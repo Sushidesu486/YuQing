@@ -71,7 +71,12 @@ async def generate_completion(
     call_kwargs.update(kwargs)
 
     response = await acompletion(**call_kwargs)
-    return response.choices[0].message.content or ""
+    msg = response.choices[0].message
+    # Prefer content, fallback to reasoning_content for thinking models
+    result = msg.content or ""
+    if not result and hasattr(msg, "reasoning_content") and msg.reasoning_content:
+        result = msg.reasoning_content
+    return result
 
 
 @dataclass
@@ -122,11 +127,9 @@ async def stream_with_tools(
             continue
         delta = chunk.choices[0].delta
 
-        # 1. Content token (fallback to reasoning_content for thinking models like mimo)
+        # 1. Content token
         if delta.content:
             yield StreamEvent(type="content", content=delta.content)
-        elif hasattr(delta, "reasoning_content") and delta.reasoning_content:
-            yield StreamEvent(type="content", content=delta.reasoning_content)
 
         # 2. Tool call deltas
         if delta.tool_calls:

@@ -300,6 +300,20 @@ class CognitiveProcessor:
             yield {"event": "error", "data": json.dumps({"type": "error", "error": str(e)}, ensure_ascii=True)}
             return
 
+        # Fallback: reasoning models (mimo) may put all content in reasoning_content,
+        # leaving full_response empty. Retry with non-streaming which captures both.
+        if not full_response and len(messages) > 1:
+            try:
+                from app.core.llm import generate_completion
+                logger.info("Tool call: full_response empty, trying non-streaming fallback")
+                result = await generate_completion(messages, no_cache=True)
+                if result:
+                    full_response = result
+                    yield {"event": "token", "data": json.dumps(
+                        {"type": "token", "content": result}, ensure_ascii=True)}
+            except Exception as fe:
+                logger.debug(f"Non-streaming fallback failed: {fe}")
+
         logger.info(f"LLM response ({len(full_response)} chars): {full_response[:200]}...")
 
         # --- Phase 7.5: Extract sticker from LLM output ---
