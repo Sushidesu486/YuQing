@@ -467,21 +467,29 @@ class CognitiveProcessor:
 
                 # Extract memories
                 if settings.AUTO_MEMORY_EXTRACTION:
-                    # --- Phase 8.5: Inner monologue (fire-and-forget, don't block extraction) ---
+                    # --- Phase 8.5: Inner monologue (3s wait, proceed with/without) ---
+                    inner_monologue = None
                     if settings.INNER_MONOLOGUE_ENABLED:
-                        async def _monologue_task():
+                        monologue_task = asyncio.ensure_future(
+                            memory_manager._generate_inner_monologue(
+                                user_message, full_response, language,
+                                conversation_id=conversation_id,
+                            )
+                        )
+                        done, _ = await asyncio.wait([monologue_task], timeout=3.0)
+                        if done:
                             try:
-                                await memory_manager._generate_inner_monologue(
-                                    user_message, full_response, language,
-                                    conversation_id=conversation_id,
-                                )
+                                inner_monologue = monologue_task.result()
                             except Exception as e:
-                                logger.debug(f"Inner monologue bg failed: {e}")
-                        asyncio.create_task(_monologue_task())
+                                logger.debug(f"Inner monologue failed: {e}")
+                        else:
+                            logger.debug("Inner monologue not ready (3s), it will complete in background")
+                            # Task continues in background — result available via get_self_reflections next round
 
                     extracted = await memory_manager.extract_and_store_memories(
                         conversation_id, user_message, full_response, language,
                         recalled_facts=layered_memory.get("facts", []) + layered_memory.get("events", []),
+                        inner_monologue=inner_monologue,
                     )
                     if extracted:
                         logger.info(f"Background: extracted {len(extracted)} memories")
