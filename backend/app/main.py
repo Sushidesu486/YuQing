@@ -43,6 +43,7 @@ logging.root.setLevel(logging.INFO)
 
 # Suppress noisy third-party INFO logs
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
