@@ -48,9 +48,15 @@ async def stream_completion(
 async def generate_completion(
     messages: list,
     model: Optional[str] = None,
+    no_cache: bool = False,
     **kwargs,
 ) -> str:
-    """Non-streaming LLM call, returns full response text."""
+    """Non-streaming LLM call, returns full response text.
+
+    Args:
+        no_cache: If True, bypass litellm's local response cache.
+                  Use for non-deterministic calls (inner monologue, memory extraction).
+    """
     model = model or settings.LITELLM_MODEL
     call_kwargs = {
         "model": model,
@@ -60,6 +66,8 @@ async def generate_completion(
     }
     if settings.LITELLM_API_BASE:
         call_kwargs["api_base"] = settings.LITELLM_API_BASE
+    if no_cache:
+        call_kwargs["cache"] = {"no-cache": True}
     call_kwargs.update(kwargs)
 
     response = await acompletion(**call_kwargs)

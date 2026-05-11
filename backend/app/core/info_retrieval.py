@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
+from aiohttp import TCPConnector
 import aiomysql
 
 from app.config import settings
@@ -14,6 +15,28 @@ from app.db.database import get_pool, _generate_id
 from app.core.llm import generate_completion
 
 logger = logging.getLogger(__name__)
+
+# ── Shared HTTP session (closed on app shutdown) ──
+
+_http_session: Optional[aiohttp.ClientSession] = None
+
+
+def _get_http_session() -> aiohttp.ClientSession:
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15),
+            connector=aiohttp.TCPConnector(force_close=True),
+        )
+    return _http_session
+
+
+async def close_http_session():
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+        _http_session = None
+        logger.debug("HTTP session closed")
 
 # ── RSS feed ──
 
@@ -36,15 +59,12 @@ def _strip_html(text: str) -> str:
 async def _fetch_rss_feed(feed_url: str) -> list:
     """Fetch and parse an RSS feed. Returns list of item dicts."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                feed_url,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"RSS fetch error {resp.status}: {feed_url}")
-                    return []
-                text = await resp.text()
+        session = _get_http_session()
+        async with session.get(feed_url) as resp:
+            if resp.status != 200:
+                logger.warning(f"RSS fetch error {resp.status}: {feed_url}")
+                return []
+            text = await resp.text()
 
         root = ET.fromstring(text)
         items = []
@@ -99,24 +119,23 @@ async def _fetch_rss_feed(feed_url: str) -> list:
 async def _tavily_search(query: str, max_results: int = 3) -> list:
     """Call Tavily API. Returns [{title, content, url}, ...]."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": settings.TAVILY_API_KEY,
-                    "query": query,
-                    "max_results": max_results,
-                    "include_answer": False,
-                    "search_depth": "basic",
-                },
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.warning(f"Tavily API error {resp.status}: {text[:200]}")
-                    return []
-                data = await resp.json()
-                return data.get("results", [])
+        session = _get_http_session()
+        async with session.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": settings.TAVILY_API_KEY,
+                "query": query,
+                "max_results": max_results,
+                "include_answer": False,
+                "search_depth": "basic",
+            },
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                logger.warning(f"Tavily API error {resp.status}: {text[:200]}")
+                return []
+            data = await resp.json()
+            return data.get("results", [])
     except asyncio.TimeoutError:
         logger.warning(f"Tavily search timeout: {query[:50]}")
         return []

@@ -9,7 +9,7 @@ from app.db.database import init_db, close_pool
 from app.core.memory import _get_embedding_model, maybe_unload_idle_model
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
-from app.core.info_retrieval import info_retrieval_background_task
+from app.core.info_retrieval import info_retrieval_background_task, close_http_session
 from app.core.memory import sleep_cleanup_background_task
 
 
@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
             pass
 
     await close_pool()
+    await close_http_session()
     logger.info("YuQing stopped")
 
 

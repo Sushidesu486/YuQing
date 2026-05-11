@@ -1345,6 +1345,7 @@ class MemoryManager:
                 api_base=settings.LITELLM_API_BASE or None,
                 stream=True,
                 timeout=settings.LITELLM_TIMEOUT,
+                cache={"no-cache": True},
             )
             chunks_text = []
             reasoning_text = []
@@ -1485,6 +1486,7 @@ class MemoryManager:
             result = await generate_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
+                no_cache=True,
             )
         except Exception as e:
             logger.error(f"Memory extraction LLM call failed: {e}")
@@ -2353,7 +2355,7 @@ class MemoryManager:
         try:
             result = await generate_completion(
                 messages=[{"role": "user", "content": prompt}], temperature=0.1,
-                max_tokens=150,
+                max_tokens=150, no_cache=True,
             )
             merged = result.strip()
             if len(merged) > 100:
@@ -2421,6 +2423,7 @@ class MemoryManager:
                 result = await generate_completion(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
+                    no_cache=True,
                 )
             except Exception as e:
                 logger.warning(f"Consolidation LLM call failed for {memory_type}: {e}")
@@ -2865,7 +2868,7 @@ class MemoryManager:
                 try:
                     merged_content = await generate_completion(
                         messages=[{"role": "user", "content": prompt}], temperature=0.1,
-                        max_tokens=200,
+                        max_tokens=200, no_cache=True,
                     )
                     merged_content = merged_content.strip()
                     if not merged_content:
