@@ -332,8 +332,8 @@ class CognitiveProcessor:
             lines = full_response.strip().split('\n')
             for line in reversed(lines):
                 stripped = line.strip()
-                # Match patterns: /peekaboo, /happy/peekaboo, /peekaboo （with trailing junk）
-                match = re.match(r'^(/[\w/]+)', stripped)
+                # Match patterns: /peekaboo, /happy/peekaboo anywhere in the line
+                match = re.search(r'(/\w+(?:/\w+)?)', stripped)
                 if match:
                     candidate = match.group(1)
                     # Strip leading slash for lookup
@@ -358,6 +358,9 @@ class CognitiveProcessor:
             clean_response = clean_response.replace(f"/{sticker_name}", "")
             clean_response = clean_response.replace(f"/{basename}", "")
             clean_response = re.sub(r'\n{3,}', '\n\n', clean_response).strip()
+
+        # Safety: strip any leftover /sticker patterns the LLM might output inline
+        clean_response = re.sub(r'/\w+(?:/\w+)?', '', clean_response)
 
         # Safety: strip text-based sticker descriptions the LLM might mistakenly output
         clean_response = re.sub(r'[（(]发了[一张个]?贴纸[）)]', '', clean_response)
