@@ -122,11 +122,11 @@ async def stream_with_tools(
             continue
         delta = chunk.choices[0].delta
 
-        # 1. Content token
+        # 1. Content token (fallback to reasoning_content for thinking models like mimo)
         if delta.content:
             yield StreamEvent(type="content", content=delta.content)
-
-        # Reasoning tokens silently skipped (don't block content stream)
+        elif hasattr(delta, "reasoning_content") and delta.reasoning_content:
+            yield StreamEvent(type="content", content=delta.reasoning_content)
 
         # 2. Tool call deltas
         if delta.tool_calls:
