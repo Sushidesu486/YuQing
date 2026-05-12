@@ -68,6 +68,7 @@ async def _fetch_rss_feed(feed_url: str) -> list:
 
         root = ET.fromstring(text)
         items = []
+        seen_guids = set()
 
         for item in root.findall(".//item"):
             title = item.findtext("title", "").strip()
@@ -90,6 +91,11 @@ async def _fetch_rss_feed(feed_url: str) -> list:
 
             if not title or not guid:
                 continue
+
+            # Deduplicate by guid within this fetch batch
+            if guid in seen_guids:
+                continue
+            seen_guids.add(guid)
 
             items.append(
                 {
