@@ -68,6 +68,23 @@ async def list_knowledge():
     return {"count": len(knowledge), "items": knowledge}
 
 
+@router.get("/rss/articles")
+async def fetch_rss_articles(feed_url: str = "", limit: int = 10):
+    """直接抓取 RSS 文章原始列表（测试/调试用）。不存储到 knowledge_items。"""
+    from app.core.info_retrieval import _fetch_rss_feed
+    from app.config import settings
+    feed_urls = [feed_url] if feed_url else [
+        u.strip() for u in settings.RSS_FEED_URLS.split(",") if u.strip()
+    ]
+    if not feed_urls:
+        return {"ok": False, "error": "未配置 RSS 订阅源，且未指定 feed_url 参数"}
+    all_items = []
+    for url in feed_urls:
+        items = await _fetch_rss_feed(url)
+        all_items.extend(items)
+    return {"ok": True, "count": len(all_items), "articles": all_items[:limit]}
+
+
 @router.post("/memory/unload-model")
 async def unload_model():
     """手动释放 BGE 嵌入模型内存。下次使用时自动重载。"""
