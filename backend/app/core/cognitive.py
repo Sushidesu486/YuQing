@@ -255,6 +255,20 @@ class CognitiveProcessor:
                 if not tool_calls_collected:
                     break
 
+                # Append assistant message with tool_calls BEFORE tool results (OpenAI format)
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response or "",
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
+                        }
+                        for tc in tool_calls_collected
+                    ],
+                })
+
                 # Execute tool calls and build response messages
                 for tc in tool_calls_collected:
                     tool_name = tc["name"]
@@ -277,20 +291,6 @@ class CognitiveProcessor:
                         "tool_call_id": tc["id"],
                         "content": result.content,
                     })
-
-                # Append assistant message with tool_calls (OpenAI format requirement)
-                messages.append({
-                    "role": "assistant",
-                    "content": full_response or "",
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
-                        }
-                        for tc in tool_calls_collected
-                    ],
-                })
 
                 # Reset for continuation stream
                 full_response = ""
