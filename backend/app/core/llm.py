@@ -114,7 +114,6 @@ async def stream_with_tools(
         call_kwargs["api_base"] = settings.LITELLM_API_BASE
     if tools:
         call_kwargs["tools"] = tools
-        call_kwargs["tool_choice"] = tool_choice
     call_kwargs.update(kwargs)
 
     response = await acompletion(**call_kwargs)

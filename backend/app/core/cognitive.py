@@ -255,23 +255,6 @@ class CognitiveProcessor:
                 if not tool_calls_collected:
                     break
 
-                # Append assistant message with tool_calls BEFORE tool results (OpenAI format)
-                # Omit content key entirely when empty (null/"" rejected by strict APIs)
-                assistant_msg: dict = {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
-                        }
-                        for tc in tool_calls_collected
-                    ],
-                }
-                if full_response:
-                    assistant_msg["content"] = full_response
-                messages.append(assistant_msg)
-
                 # Execute tool calls and build response messages
                 for tc in tool_calls_collected:
                     tool_name = tc["name"]
@@ -294,6 +277,20 @@ class CognitiveProcessor:
                         "tool_call_id": tc["id"],
                         "content": result.content,
                     })
+
+                # Append assistant message with tool_calls (OpenAI format)
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response if full_response else None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
+                        }
+                        for tc in tool_calls_collected
+                    ],
+                })
 
                 # Reset for continuation stream
                 full_response = ""
