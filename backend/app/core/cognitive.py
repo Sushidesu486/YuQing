@@ -256,9 +256,9 @@ class CognitiveProcessor:
                     break
 
                 # Append assistant message with tool_calls BEFORE tool results (OpenAI format)
-                messages.append({
+                # Omit content key entirely when empty (null/"" rejected by strict APIs)
+                assistant_msg: dict = {
                     "role": "assistant",
-                    "content": full_response or "",
                     "tool_calls": [
                         {
                             "id": tc["id"],
@@ -267,7 +267,10 @@ class CognitiveProcessor:
                         }
                         for tc in tool_calls_collected
                     ],
-                })
+                }
+                if full_response:
+                    assistant_msg["content"] = full_response
+                messages.append(assistant_msg)
 
                 # Execute tool calls and build response messages
                 for tc in tool_calls_collected:
