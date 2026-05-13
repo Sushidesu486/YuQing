@@ -48,7 +48,9 @@ Requirements:
 3. 70% of the time: indirect/teasing/cold approach 
 4. 30% of the time: show a hint of warmth, then awkwardly deflect
 5. Don't be overly sweet — occasional warmth is more impactful than constant warmth
-6. Be natural, as if you just happened to think of something"""
+6. Be natural, as if you just happened to think of something
+7. NEVER fabricate events, conversations, or user details. If the trigger info is vague,
+   don't invent specifics — only say what you actually remember."""
 
 
 class ProactiveManager:
@@ -208,7 +210,10 @@ class ProactiveManager:
         if trigger_type == "emotion_followup":
             extra = f"用户当时说的: {detail.get('trigger_summary', '')}"
         elif trigger_type == "memory":
-            extra = f"用户之前提到: {detail.get('memory_content', '')}"
+            memory_content = detail.get("memory_content", "")
+            if len(memory_content) < 10:  # too vague, skip
+                return ""
+            extra = f"用户之前提到: {memory_content}"
 
         # Add time-of-day context to proactive messages
         if settings.TEMPORAL_ENABLED:
