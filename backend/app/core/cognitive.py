@@ -281,7 +281,7 @@ class CognitiveProcessor:
                 # Append assistant message with tool_calls (OpenAI format requirement)
                 messages.append({
                     "role": "assistant",
-                    "content": full_response if full_response else None,
+                    "content": full_response or "",
                     "tool_calls": [
                         {
                             "id": tc["id"],
