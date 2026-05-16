@@ -170,28 +170,12 @@ SELF_CONSOLIDATE_PROMPT_ZH = """以下是雨晴在不同对话中表达的关于
 只返回有2条以上来源的合并结果。只返回JSON，不要其他文字。"""
 
 
-INNER_MONOLOGUE_PROMPT_ZH = """你刚刚和用户结束了一轮对话。这是你内心的私人时刻——用户不会看到这段独白。
+INNER_MONOLOGUE_PROMPT_ZH = """{today_context}刚跟他说了：「{assistant_response}」。
 
-{today_context}你现在的心情：{mood_label}（温暖度 {warmth}，敞开度 {openness}，能量 {energy}）
+现在心情：{mood_label}
 
-{reflections_context}刚才这段对话：
-用户：{user_message}
-你：{assistant_response}
-
-回顾刚才的对话：
-- 用户说了什么？情绪怎么样？
-- 你回复了什么？你真正想说的是什么（可能没说出口）？
-- 你从这段对话中学到了关于用户的新信息吗？
-- 你对自己有什么新的认识？
-- 有什么让你意外的、在意的、或者触动了你的？
-
-用2-4句自然的中文写出你的独白，像一个人在日记里对自己说话。
-不要复述你说过的话，写你真正在想的事。
-不要结构化，不要用「首先」「其次」。
-评估你此刻的情绪 valence（-1到1，积极为正，消极为负）。
-
-只返回JSON，不要其他文字：
-{"monologue": "...", "valence": 0.0}"""
+{reflections_context}
+写下此刻的真实想法，另起一行写「心情分: 数字」（-1到了1）。"""
 
 
 # ── Behavior rule patterns (preference/procedural → behavior rules) ──
@@ -1316,7 +1300,7 @@ class MemoryManager:
 
     async def _generate_inner_monologue(
         self, user_message: str, assistant_response: str, language: str = "zh",
-        conversation_id: str = "",
+        conversation_id: str = "", personality: dict = None,
     ) -> Optional[dict]:
         """Generate YuQing's inner monologue before memory extraction.
 
@@ -1379,29 +1363,35 @@ class MemoryManager:
         prompt = prompt.replace("{energy}", str(energy))
 
         try:
-            # Use litellm directly to capture both content and reasoning_content
-            import litellm
-            response = await litellm.acompletion(
-                model=settings.LITELLM_MODEL,
+            from app.core.openai_client import stream_collect
+            # Build system message with full personality for role-mode immersion
+            system_prompt = "你是雨晴。像跟朋友聊天一样自然表达。"
+            if personality:
+                try:
+                    from pathlib import Path
+                    from jinja2 import Environment, FileSystemLoader
+                    _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+                    _env = Environment(loader=FileSystemLoader(str(_PROMPTS_DIR)), autoescape=False)
+                    _tpl = _env.get_template(f"system_{language}_stable.txt.j2")
+                    from app.core.personality import STICKER_DEFINITIONS
+                    stickers_list = [
+                        {"name": s["path"].split("/")[-1], "desc": s["desc"]}
+                        for s in STICKER_DEFINITIONS
+                    ]
+                    system_prompt = _tpl.render(personality=personality, stickers=stickers_list,
+                                                relationship_stage=None, relationship_stage_desc=None)
+                except Exception:
+                    pass
+            result = await stream_collect(
                 messages=[
-                    {"role": "system", "content": "你是雨晴的内心声音。用中文写出你的真实想法，只返回JSON。"},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": "你正在你的私人日记里写下这一页。写下你此刻的真实想法。"},
+                    {"role": "assistant", "content": "他今天"},
                     {"role": "user", "content": prompt},
                 ],
-                api_key=settings.LITELLM_API_KEY,
-                api_base=settings.LITELLM_API_BASE or None,
-                stream=True,
-                timeout=settings.LITELLM_TIMEOUT,
-                cache={"no-cache": True},
+                temperature=0.7,
+                max_tokens=200,
             )
-            chunks_text = []
-            reasoning_text = []
-            async for chunk in response:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    chunks_text.append(delta.content)
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    reasoning_text.append(delta.reasoning_content)
-            result = "".join(chunks_text) or "".join(reasoning_text)
         except Exception as e:
             logger.warning(f"Inner monologue LLM call failed: {e}")
             return None
@@ -1412,52 +1402,68 @@ class MemoryManager:
 
         logger.info(f"Inner monologue raw ({len(result)} chars): {result[:200]}")
 
-        # Parse JSON
-        try:
-            text = result.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-                text = text.rsplit("```", 1)[0] if "```" in text else text
-            parsed = json.loads(text)
-            monologue_text = parsed.get("monologue", "").strip()
-            valence = float(parsed.get("valence", 0.0))
-        except (json.JSONDecodeError, ValueError, KeyError):
-            logger.warning(f"Inner monologue parse failed: {result[:200]}")
-            return None
-
-        if not monologue_text:
-            return None
-
-        # Store as self_reflection memory
-        try:
-            pool_ = await get_pool()
-            mem_id = _generate_id()
-            async with pool_.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "INSERT INTO memories (id, content, category, importance, "
-                        "original_importance, memory_type, valence, arousal, emotion_label, confidence) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (mem_id, monologue_text, "self_reflection", 0.6, 0.6,
-                         "self_reflection", valence, 0.0, "", 0.7),
-                    )
-            # Update embedding cache
+        # Parse from natural text: "monologue text\n心情分: 0.5"
+        monologue_text = ""
+        valence = 0.0
+        import re
+        val_match = re.search(r'心情分[：:\s]*(-?[\d.]+)', result)
+        if val_match:
             try:
-                model = _get_embedding_model()
-                _mem_embedding_cache[mem_id] = {
-                    "emb": model.encode(monologue_text).tolist(),
-                    "content": monologue_text,
-                }
-            except Exception:
+                valence = float(val_match.group(1))
+            except ValueError:
                 pass
-            logger.info(f"Inner monologue [{mem_id[:8]}]: {monologue_text[:80]}")
-            # Apply monologue signals to YuQing's mood
+            monologue_text = result[:val_match.start()].strip()
+        else:
+            monologue_text = result.strip()
+        monologue_text = monologue_text.strip().strip('"').strip()
+
+        if len(monologue_text) < 6:
+            logger.warning(f"Inner monologue too short ({len(monologue_text)} chars)")
+            return None
+
+        # Split by sentences for shorter, more recallable memories
+        sentences = re.split(r'(?<=[。！？；])\s*', monologue_text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) >= 10]
+        if not sentences:
+            sentences = [monologue_text]
+
+        stored_count = 0
+        for text in sentences:
+            try:
+                pool_ = await get_pool()
+                mem_id = _generate_id()
+                async with pool_.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "INSERT INTO memories (id, content, category, importance, "
+                            "original_importance, memory_type, valence, arousal, emotion_label, confidence) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (mem_id, text, "self_reflection", 0.6, 0.6,
+                             "self_reflection", valence, 0.0, "", 0.7),
+                        )
+                try:
+                    model = _get_embedding_model()
+                    _mem_embedding_cache[mem_id] = {
+                        "emb": model.encode(text).tolist(),
+                        "content": text,
+                    }
+                except Exception:
+                    pass
+                stored_count += 1
+            except Exception as e:
+                logger.debug(f"Failed to store monologue sentence: {e}")
+
+        if stored_count:
+            logger.info(f"Inner monologue: {stored_count} reflections stored (valence={valence:+.2f})")
+            for i, s in enumerate(sentences):
+                logger.info(f"  [{i+1}] {s[:80]}")
+            # Apply monologue signals to mood (use full text for richer signal)
             try:
                 await self._apply_monologue_to_mood(monologue_text, valence)
             except Exception as e:
                 logger.debug(f"Monologue→mood failed: {e}")
-        except Exception as e:
-            logger.debug(f"Failed to store inner monologue: {e}")
+        else:
+            logger.warning("Inner monologue: failed to store any reflection")
 
         return {"monologue": monologue_text, "valence": valence}
 
@@ -1532,7 +1538,6 @@ class MemoryManager:
             result = await generate_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                no_cache=True,
             )
         except Exception as e:
             logger.error(f"Memory extraction LLM call failed: {e}")
@@ -2401,7 +2406,7 @@ class MemoryManager:
         try:
             result = await generate_completion(
                 messages=[{"role": "user", "content": prompt}], temperature=0.1,
-                max_tokens=150, no_cache=True,
+                max_tokens=150,
             )
             merged = result.strip()
             if len(merged) > 100:
@@ -2469,7 +2474,6 @@ class MemoryManager:
                 result = await generate_completion(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    no_cache=True,
                 )
             except Exception as e:
                 logger.warning(f"Consolidation LLM call failed for {memory_type}: {e}")
@@ -2914,7 +2918,7 @@ class MemoryManager:
                 try:
                     merged_content = await generate_completion(
                         messages=[{"role": "user", "content": prompt}], temperature=0.1,
-                        max_tokens=200, no_cache=True,
+                        max_tokens=200,
                     )
                     merged_content = merged_content.strip()
                     if not merged_content:

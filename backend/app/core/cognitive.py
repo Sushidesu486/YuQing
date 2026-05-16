@@ -228,6 +228,7 @@ class CognitiveProcessor:
 
                 if has_tools and tool_round <= max_tool_rounds:
                     # Use tool-aware streaming
+                    reasoning_text = ""
                     async for event in stream_with_tools(
                         messages,
                         tools=tools_schemas,
@@ -235,6 +236,8 @@ class CognitiveProcessor:
                         if event.type == "content":
                             full_response += event.content
                             yield {"event": "token", "data": json.dumps({"type": "token", "content": event.content}, ensure_ascii=True)}
+                        elif event.type == "reasoning_content":
+                            reasoning_text += event.content
                         elif event.type == "tool_call_start":
                             yield {"event": "tool_call", "data": json.dumps({
                                 "type": "tool_call", "status": "started", "tool": event.tool_name,
@@ -255,21 +258,7 @@ class CognitiveProcessor:
                 if not tool_calls_collected:
                     break
 
-                # Append assistant message with tool_calls BEFORE tool results (OpenAI format)
-                messages.append({
-                    "role": "assistant",
-                    "content": full_response if full_response else None,
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
-                        }
-                        for tc in tool_calls_collected
-                    ],
-                })
-
-                # Execute tool calls and build tool result messages
+                # Execute tool calls and build response messages
                 for tc in tool_calls_collected:
                     tool_name = tc["name"]
                     try:
@@ -291,6 +280,23 @@ class CognitiveProcessor:
                         "tool_call_id": tc["id"],
                         "content": result.content,
                     })
+
+                # Append assistant message with tool_calls (reasoning_content required by thinking models)
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": full_response if full_response else None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments_json"]},
+                        }
+                        for tc in tool_calls_collected
+                    ],
+                }
+                if reasoning_text:
+                    assistant_msg["reasoning_content"] = reasoning_text
+                messages.append(assistant_msg)
 
                 # Reset for continuation stream
                 full_response = ""
@@ -474,6 +480,7 @@ class CognitiveProcessor:
                             memory_manager._generate_inner_monologue(
                                 user_message, full_response, language,
                                 conversation_id=conversation_id,
+                                personality=personality_engine.get_personality(),
                             )
                         )
                         done, _ = await asyncio.wait([monologue_task], timeout=3.0)

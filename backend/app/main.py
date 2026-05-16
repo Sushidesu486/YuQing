@@ -10,6 +10,7 @@ from app.core.memory import _get_embedding_model, maybe_unload_idle_model
 from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task, close_http_session
+from app.core.openai_client import close_openai_session
 from app.core.memory import sleep_cleanup_background_task
 
 
@@ -53,10 +54,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     _get_embedding_model()  # Pre-load embedding model
 
-    # Enable litellm local response cache (for deterministic calls like emotion analysis)
-    import litellm
-    litellm.enable_cache(type="local", supported_call_types=["acompletion"])
-
     # Compute identity hash baseline on first startup (async, non-blocking)
     asyncio.create_task(_init_identity_baseline())
 
@@ -83,6 +80,7 @@ async def lifespan(app: FastAPI):
 
     await close_pool()
     await close_http_session()
+    await close_openai_session()
     logger.info("YuQing stopped")
 
 
