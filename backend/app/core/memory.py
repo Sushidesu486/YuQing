@@ -1387,7 +1387,7 @@ class MemoryManager:
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "system", "content": "你正在你的私人日记里写下这一页。写下你此刻的真实想法。"},
-                    {"role": "assistant", "content": "他今天"},
+                    {"role": "assistant", "content": "今天"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.7,
@@ -1416,7 +1416,7 @@ class MemoryManager:
             monologue_text = result[:val_match.start()].strip()
         else:
             monologue_text = result.strip()
-        monologue_text = monologue_text.strip().strip('"').strip()
+        monologue_text = monologue_text.strip().strip('"').strip("（）()").strip()
 
         if len(monologue_text) < 6:
             logger.warning(f"Inner monologue too short ({len(monologue_text)} chars)")
@@ -1424,7 +1424,7 @@ class MemoryManager:
 
         # Split by sentences for shorter, more recallable memories
         sentences = re.split(r'(?<=[。！？；])\s*', monologue_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) >= 10]
+        sentences = [s.strip() for s in sentences if len(s.strip()) >= 10 and re.search(r'[\u4e00-\u9fff]', s)]
         if not sentences:
             sentences = [monologue_text]
 
