@@ -10,7 +10,7 @@ export function Layout() {
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-screen flex flex-col bg-white dark:bg-gray-900">
       <Header
         onToggleSettings={() => setShowSettings(!showSettings)}
         onToggleSearch={() => setSearchOpen(!searchOpen)}

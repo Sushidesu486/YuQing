@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --font-scale: 1;
+  --icon-scale: 1;
+}
+
 #root {
   width: 100%;
   height: 100vh;
@@ -12,6 +19,9 @@ body {
   padding: 0;
   background: #EDEDED;
 }
+.dark body {
+  background: #111827;
+}
 
 @keyframes slideIn {
   from { transform: translateX(100%); }
@@ -19,22 +29,17 @@ body {
 }
 
 /* WeChat scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #c8c8c8;
-  border-radius: 2px;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: #4b5563;
-}
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c8c8c8; border-radius: 2px; }
+.dark ::-webkit-scrollbar-thumb { background: #4b5563; }
 
-/* Chat background pattern (subtle) */
+/* Chat background pattern */
 .chat-bg {
   background-color: #EDEDED;
   background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d4d4d4' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+.dark .chat-bg {
+  background-color: #111827;
+  background-image: none;
 }

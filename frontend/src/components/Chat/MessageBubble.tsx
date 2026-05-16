@@ -84,8 +84,8 @@ export function MessageBubble({ message }: Props) {
             {message.trigger_type && (
               <div className="text-[10px] text-gray-400 mb-0.5 ml-1">雨晴想起了什么...</div>
             )}
-            <div className="relative bg-white text-black rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
-              <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white" />
+            <div className="relative bg-white dark:bg-gray-800 text-black dark:text-gray-100 rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
+              <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white dark:border-r-gray-800" />
               {message.content}
             </div>
           </div>
@@ -104,8 +104,8 @@ export function MessageBubble({ message }: Props) {
         <div key={i} className="flex justify-start px-4 mb-1.5">
           <div className="max-w-[65%] flex items-start gap-2">
             <img src={YUQING_AVATAR} alt="雨晴" className="w-9 h-9 rounded-lg flex-shrink-0 object-cover" />
-            <div className="relative bg-white text-black rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
-              <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white" />
+            <div className="relative bg-white dark:bg-gray-800 text-black dark:text-gray-100 rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
+              <div className="absolute top-2 left-[-6px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-r-[6px] border-r-white dark:border-r-gray-800" />
               {seg}
             </div>
           </div>

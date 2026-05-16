@@ -77,19 +77,19 @@ export function InputBar({ onSend, disabled }: Props) {
   }, []);
 
   return (
-    <div className="bg-white border-t border-gray-200 px-3 py-2.5 flex-shrink-0 relative">
+    <div className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 px-3 py-2.5 flex-shrink-0 relative">
       {/* Sticker picker panel */}
       {showStickers && (
         <div
           ref={panelRef}
-          className="absolute bottom-full left-3 right-3 mb-2 bg-white rounded-xl shadow-lg border border-gray-200 p-3 max-h-64 overflow-y-auto"
+          className="absolute bottom-full left-3 right-3 mb-2 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 p-3 max-h-64 overflow-y-auto"
         >
           <div className="grid grid-cols-4 gap-2">
             {STICKER_LIST.map((s) => (
               <button
                 key={s.path}
                 onClick={() => handleStickerSelect(s.path)}
-                className="flex flex-col items-center gap-1 p-1.5 rounded-lg hover:bg-gray-100 active:bg-gray-200 transition-colors"
+                className="flex flex-col items-center gap-1 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 active:bg-gray-200 dark:active:bg-gray-600 transition-colors"
               >
                 <img
                   src={`/stickers/${s.path}.png`}
@@ -97,7 +97,7 @@ export function InputBar({ onSend, disabled }: Props) {
                   className="w-14 h-14 object-contain"
                   draggable={false}
                 />
-                <span className="text-[10px] text-gray-500 truncate w-full text-center">{s.label}</span>
+                <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate w-full text-center">{s.label}</span>
               </button>
             ))}
           </div>
@@ -111,8 +111,8 @@ export function InputBar({ onSend, disabled }: Props) {
           disabled={disabled}
           className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
             showStickers
-              ? 'text-orange-500 bg-orange-50'
-              : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+              ? 'text-orange-500 bg-orange-50 dark:bg-orange-900/30'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
           } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -121,7 +121,7 @@ export function InputBar({ onSend, disabled }: Props) {
         </button>
 
         {/* Text input */}
-        <div className="flex-1 bg-gray-100 rounded-lg px-3 py-1.5 min-h-[36px] max-h-[120px]">
+        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-lg px-3 py-1.5 min-h-[36px] max-h-[120px]">
           <textarea
             ref={textareaRef}
             value={text}
@@ -130,7 +130,7 @@ export function InputBar({ onSend, disabled }: Props) {
             placeholder="发消息..."
             disabled={disabled}
             rows={1}
-            className="w-full resize-none bg-transparent text-sm leading-relaxed focus:outline-none text-gray-900 placeholder-gray-400 disabled:opacity-50"
+            className="w-full resize-none bg-transparent text-sm leading-relaxed focus:outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50"
             style={{ maxHeight: '100px' }}
           />
         </div>

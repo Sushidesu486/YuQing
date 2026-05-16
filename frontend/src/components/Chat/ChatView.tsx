@@ -41,7 +41,7 @@ export function ChatView({ searchOpen, onSearchOpenChange }: Props) {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-400 chat-bg">
+      <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 chat-bg">
         <div className="animate-pulse text-sm">加载中...</div>
       </div>
     );
