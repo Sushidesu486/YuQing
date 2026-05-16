@@ -170,7 +170,8 @@ SELF_CONSOLIDATE_PROMPT_ZH = """以下是雨晴在不同对话中表达的关于
 只返回有2条以上来源的合并结果。只返回JSON，不要其他文字。"""
 
 
-INNER_MONOLOGUE_PROMPT_ZH = """{today_context}刚跟他说了：「{assistant_response}」。
+INNER_MONOLOGUE_PROMPT_ZH = """{today_context}用户说：「{user_message}」
+刚跟他说了：「{assistant_response}」。
 
 现在心情：{mood_label}
 
