@@ -176,7 +176,7 @@ INNER_MONOLOGUE_PROMPT_ZH = """{today_context}用户说：「{user_message}」
 现在心情：{mood_label}
 
 {reflections_context}
-写下此刻的真实想法，另起一行写「心情分: 数字」（-1到了1）。"""
+不要重复之前已经想过的事。写下此刻的新的真实想法，另起一行写「心情分: 数字」（-1到1）。"""
 
 
 # ── Behavior rule patterns (preference/procedural → behavior rules) ──
@@ -1323,7 +1323,15 @@ class MemoryManager:
             try:
                 today_log = await self.get_today_exchange_log(conversation_id, max_rounds=5)
                 if today_log:
-                    today_context = "今天聊了什么：\n" + "\n".join(today_log[-3:]) + "\n\n"
+                    # Compact summary: just list recent topics, not full exchange pairs
+                    topics = []
+                    for line in today_log[-5:]:
+                        # Extract "用户: xxx | 你: yyy" → just the user message side
+                        user_part = line.split("|")[0].replace("用户:", "").strip()
+                        if len(user_part) > 4:
+                            topics.append(user_part)
+                    if topics:
+                        today_context = "今天聊了：" + "；".join(topics) + "\n\n"
             except Exception:
                 pass
 
@@ -1415,15 +1423,23 @@ class MemoryManager:
             monologue_text = result[:val_match.start()].strip()
         else:
             monologue_text = result.strip()
-        monologue_text = monologue_text.strip().strip('"').strip("（）()").strip()
+        monologue_text = re.sub(r'[（）()]', '', monologue_text).strip().strip('"').strip()
 
         if len(monologue_text) < 6:
             logger.warning(f"Inner monologue too short ({len(monologue_text)} chars)")
             return None
 
-        # Split by sentences for shorter, more recallable memories
-        sentences = re.split(r'(?<=[。！？；])\s*', monologue_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) >= 10 and re.search(r'[\u4e00-\u9fff]', s)]
+        # Split by paragraphs then sentences for cleaner segmentation
+        sentences = []
+        for para in monologue_text.split('\n\n'):
+            para = para.strip()
+            if not para:
+                continue
+            parts = re.split(r'(?<=[。！？；])\s*', para)
+            for s in parts:
+                s = s.strip()
+                if len(s) >= 10 and re.search(r'[\u4e00-\u9fff]', s):
+                    sentences.append(s)
         if not sentences:
             sentences = [monologue_text]
 
