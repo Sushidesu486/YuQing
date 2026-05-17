@@ -65,13 +65,15 @@ The central orchestrator is `backend/app/core/cognitive.py` — a 10-phase pipel
 **Key modules** (`backend/app/core/`):
 | File | Role |
 |------|------|
-| `memory.py` | BGE embedding + MySQL memory system (largest file, ~2900+ lines). Handles recall (BGE >24h + today full injection), extraction (LLM + dedup), consolidation, sleep cleanup, inner monologue |
+| `memory.py` | BGE embedding + MySQL memory system (largest file, ~3000+ lines). Handles recall (BGE >24h + today full injection), extraction (LLM + dedup), consolidation, sleep cleanup, inner monologue |
 | `personality.py` | YAML personality + Jinja2 prompt generation (stable/dynamic split) |
 | `mood.py` | YuQing's 3D mood tracker (warmth/openness/energy); updated via conversation keywords AND inner monologue signals |
 | `emotion.py` | User emotion analysis (V-A model) + cross-session profile |
 | `temporal.py` | Time awareness (session gaps, time-of-day, tenure) + relationship stage |
 | `proactive.py` | Background proactive messaging (4 triggers) |
 | `self_cognition.py` | Self-narrative synthesis + Reflect-Evolve personality evolution (audit log: `personality_evolution` table) |
+| `openai_client.py` | OpenAI-format API client via aiohttp — direct HTTP calls, replaced litellm |
+| `llm.py` | Thin wrapper delegating to openai_client (stream_completion, stream_with_tools, generate_completion) |
 | `info_retrieval.py` | Tavily + RSS knowledge retrieval |
 | `tools/` | Tool registry + 4 built-in tools (recall_memories, search_web, read_latest_articles, search_knowledge) |
 | `llm.py` | litellm wrapper (streaming/non-streaming) |

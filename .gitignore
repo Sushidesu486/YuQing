@@ -4,6 +4,7 @@ dist/
 __pycache__/
 *.pyc
 data/chroma_db/
+figures/
 *.egg-info/
 .vite/
 .DS_Store
