@@ -1383,15 +1383,14 @@ class MemoryManager:
                                                 relationship_stage=None, relationship_stage_desc=None)
                 except Exception:
                     pass
+            system_prompt += "\n\n你正在你的私人日记里写下这一刻。"
+
             result = await stream_collect(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "system", "content": "你正在你的私人日记里写下这一页。写下你此刻的真实想法。"},
-                    {"role": "assistant", "content": "今天"},
+                    {"role": "assistant", "content": "今天又想起他了。"},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.7,
-                max_tokens=200,
             )
         except Exception as e:
             logger.warning(f"Inner monologue LLM call failed: {e}")
