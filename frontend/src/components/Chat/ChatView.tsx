@@ -51,7 +51,7 @@ export function ChatView({ searchOpen, onSearchOpenChange }: Props) {
     <div className="flex flex-col flex-1 min-h-0 relative">
       <MessageList messages={messages} isStreaming={isTyping} highlightMessageId={highlightMessageId} />
       {error && (
-        <div className="px-4 pb-1 bg-white">
+        <div className="px-4 pb-1 bg-white dark:bg-gray-900">
           <div className="text-xs text-red-500 px-3 py-1.5">
             {error}
           </div>
