@@ -12,7 +12,7 @@ interface Props {
 }
 
 export function ChatView({ searchOpen, onSearchOpenChange }: Props) {
-  const { messages, isTyping, error, loading, sendMessage, initSession, addProactiveMessage, conversationId } = useChat();
+  const { messages, isTyping, error, loading, sendMessage, initSession, addProactiveMessage, conversationId, hasMore, loadingMore, loadMore } = useChat();
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,7 +49,14 @@ export function ChatView({ searchOpen, onSearchOpenChange }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 relative">
-      <MessageList messages={messages} isStreaming={isTyping} highlightMessageId={highlightMessageId} />
+      <MessageList
+        messages={messages}
+        isStreaming={isTyping}
+        highlightMessageId={highlightMessageId}
+        hasMore={hasMore}
+        loadingMore={loadingMore}
+        onLoadMore={loadMore}
+      />
       {error && (
         <div className="px-4 pb-1 bg-white dark:bg-gray-900">
           <div className="text-xs text-red-500 px-3 py-1.5">

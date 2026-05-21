@@ -1,7 +1,8 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Request
+import aiomysql
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 
 from app.db.database import get_pool, _generate_id
@@ -38,7 +39,7 @@ async def create_conversation(request: Request):
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -51,20 +52,33 @@ async def get_conversation(conversation_id: str):
             if not conv:
                 return JSONResponse({"error": "conversation not found"}, status_code=404)
 
+            # Get total count
+            await cur.execute(
+                "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
+                (conversation_id,),
+            )
+            total_row = await cur.fetchone()
+            total = total_row["cnt"] if total_row else 0
+
+            # Fetch messages sorted DESC (newest first) for pagination
             await cur.execute(
                 "SELECT id, role, content, content_type, valence, arousal, model_used, created_at "
-                "FROM messages WHERE conversation_id = %s ORDER BY created_at",
-                (conversation_id,),
+                "FROM messages WHERE conversation_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                (conversation_id, limit, offset),
             )
             rows = await cur.fetchall()
             messages = []
             for r in rows:
                 msg = dict(r)
-                # Map content to sticker_name for sticker messages (frontend expects it)
                 if msg.get("content_type") == "sticker":
                     msg["sticker_name"] = msg["content"]
                 messages.append(msg)
-    return {"conversation": conv, "messages": messages}
+    return {
+        "conversation": conv,
+        "messages": messages,
+        "total": total,
+        "has_more": (offset + limit) < total,
+    }
 
 
 @router.put("/conversations/{conversation_id}")

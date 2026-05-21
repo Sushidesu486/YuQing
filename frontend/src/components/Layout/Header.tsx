@@ -5,9 +5,10 @@ interface Props {
   onToggleSettings: () => void;
   onToggleSearch?: () => void;
   onToggleMemory?: () => void;
+  onToggleDiary?: () => void;
 }
 
-export function Header({ onToggleSettings, onToggleSearch, onToggleMemory }: Props) {
+export function Header({ onToggleSettings, onToggleSearch, onToggleMemory, onToggleDiary }: Props) {
   const { i18n } = useTranslation();
   const [dark, setDark] = useState(() => localStorage.getItem('yuqing_dark_mode') === '1');
 
@@ -47,6 +48,13 @@ export function Header({ onToggleSettings, onToggleSearch, onToggleMemory }: Pro
             </svg>
           )}
         </button>
+        {onToggleDiary && (
+          <button onClick={onToggleDiary} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400" title="日记">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+        )}
         {onToggleSearch && (
           <button onClick={onToggleSearch} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

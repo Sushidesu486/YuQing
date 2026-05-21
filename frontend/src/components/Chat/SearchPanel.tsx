@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../../services/api';
 
+const SEARCH_PAGE_SIZE = 50;
+
 interface SearchResult {
   id: string;
   role: string;
@@ -44,6 +46,7 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [offset, setOffset] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -55,6 +58,7 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
       setResults([]);
       setTotal(0);
       setSearched(false);
+      setOffset(0);
     }
   }, [open]);
 
@@ -66,7 +70,7 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  const doSearch = useCallback(async (q: string) => {
+  const doSearch = useCallback(async (q: string, pageOffset: number = 0) => {
     if (!q.trim() || !conversationId) {
       setResults([]);
       setTotal(0);
@@ -76,11 +80,12 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
     setLoading(true);
     try {
       const data = await api.get<{ results: SearchResult[]; total: number }>(
-        `/conversations/${conversationId}/search?q=${encodeURIComponent(q.trim())}&limit=50`
+        `/conversations/${conversationId}/search?q=${encodeURIComponent(q.trim())}&limit=${SEARCH_PAGE_SIZE}&offset=${pageOffset}`
       );
       setResults(data.results);
       setTotal(data.total);
       setSearched(true);
+      setOffset(pageOffset);
     } catch {
       setResults([]);
       setTotal(0);
@@ -99,6 +104,21 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
     onSelect(msgId);
     onClose();
   };
+
+  const handlePrev = () => {
+    const newOffset = Math.max(0, offset - SEARCH_PAGE_SIZE);
+    doSearch(query, newOffset);
+  };
+
+  const handleNext = () => {
+    const newOffset = offset + SEARCH_PAGE_SIZE;
+    doSearch(query, newOffset);
+  };
+
+  const currentPage = Math.floor(offset / SEARCH_PAGE_SIZE) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / SEARCH_PAGE_SIZE));
+  const hasPrev = offset > 0;
+  const hasNext = offset + SEARCH_PAGE_SIZE < total;
 
   if (!open) return null;
 
@@ -124,7 +144,9 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
         )}
 
         {!loading && total > 0 && query.trim() && (
-          <div className="px-4 py-2 text-xs text-gray-400 dark:text-gray-500">找到 {total} 条结果</div>
+          <div className="px-4 py-2 text-xs text-gray-400 dark:text-gray-500">
+            找到 {total} 条结果（第 {currentPage}/{totalPages} 页）
+          </div>
         )}
 
         {results.map(msg => (
@@ -142,6 +164,37 @@ export function SearchPanel({ open, conversationId, onClose, onSelect }: Props) 
           </button>
         ))}
       </div>
+
+      {/* Pagination */}
+      {total > SEARCH_PAGE_SIZE && query.trim() && (
+        <div className="flex items-center justify-between px-4 py-2 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+          <button
+            onClick={handlePrev}
+            disabled={!hasPrev}
+            className={`text-sm px-3 py-1 rounded ${
+              hasPrev
+                ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 active:bg-blue-100'
+                : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
+            }`}
+          >
+            上一页
+          </button>
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            {currentPage} / {totalPages}
+          </span>
+          <button
+            onClick={handleNext}
+            disabled={!hasNext}
+            className={`text-sm px-3 py-1 rounded ${
+              hasNext
+                ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 active:bg-blue-100'
+                : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
+            }`}
+          >
+            下一页
+          </button>
+        </div>
+      )}
     </div>
   );
 }

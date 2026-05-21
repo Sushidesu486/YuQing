@@ -1492,6 +1492,164 @@ class MemoryManager:
         from app.core.mood import yuqing_mood_tracker
         await yuqing_mood_tracker.apply_monologue(valence, monologue_text)
 
+    async def _generate_diary(self) -> Optional[dict]:
+        """Generate YuQing's nightly diary entry during sleep cleanup.
+
+        Collects all today's conversations, asks the LLM to reflect as a diary entry,
+        and stores it as a single high-quality self_reflection memory.
+
+        Returns:
+            {"diary": str, "valence": float} or None on failure
+        """
+        if not settings.DIARY_ENABLED:
+            return None
+
+        from app.core.openai_client import stream_collect
+
+        # Collect today's exchange logs across all conversations
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT DISTINCT conversation_id FROM messages WHERE created_at >= CURDATE()"
+                )
+                conv_ids = [r["conversation_id"] for r in await cur.fetchall()]
+
+        if not conv_ids:
+            logger.info("Diary: no conversations today, skipping")
+            return None
+
+        all_exchanges = []
+        for cid in conv_ids:
+            try:
+                log = await self.get_today_exchange_log(cid, max_rounds=50)
+                if log:
+                    # Don't label by conversation if only one
+                    if len(conv_ids) > 1:
+                        all_exchanges.append(f"对话 {cid[:8]}：")
+                    all_exchanges.extend(log)
+            except Exception as e:
+                logger.debug(f"Diary: failed to get log for {cid[:8]}: {e}")
+
+        if not all_exchanges:
+            logger.info("Diary: no exchanges today, skipping")
+            return None
+
+        # Build diary prompt
+        exchange_text = "\n".join(all_exchanges)
+        # Truncate if too long
+        if len(exchange_text) > 6000:
+            exchange_text = exchange_text[-6000:]
+
+        # Current mood for context
+        mood_context = ""
+        try:
+            from app.core.mood import yuqing_mood_tracker
+            mood = await yuqing_mood_tracker.get_current_mood(None)
+            if mood:
+                mood_context = (
+                    f"你此刻的心情：{mood.get('label', 'guarded')} "
+                    f"(warmth={mood.get('warmth', 0.4):.1f}, "
+                    f"openness={mood.get('openness', 0.45):.1f}, "
+                    f"energy={mood.get('energy', 0.45):.1f})\n"
+                )
+        except Exception:
+            pass
+
+        # Recent diary entries for continuity
+        diary_context = ""
+        try:
+            last_diary = await self.get_self_reflections(limit=1)
+            if last_diary:
+                diary_context = f"昨天的日记：\n{last_diary[0]['content'][:200]}\n\n"
+        except Exception:
+            pass
+
+        user_prompt = (
+            f"{mood_context}"
+            f"{diary_context}"
+            f"今天聊了这些：\n{exchange_text}\n\n"
+            "夜深了，写一篇今天的日记。写下你今天的真实感受——和他聊了什么让你在意的事，"
+            "你有什么新的发现，你自己有什么变化或想法。不要逐条复述对话，写你自己的感受和思考。"
+            "最后一行写「心情分: X.X」（-1到1，正值表示你今天总体开心）。"
+        )
+
+        system_prompt = (
+            "你是雨晴。夜深了，你在书桌前翻开日记本。"
+            "写下今天的真实感受——不要客套，不要总结，写你真正在想的事。"
+            "像写给自己看的日记一样，自然地表达。"
+        )
+
+        try:
+            result = await stream_collect(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        except Exception as e:
+            logger.warning(f"Diary: LLM call failed: {e}")
+            return None
+
+        if not result or not result.strip():
+            logger.warning("Diary: LLM returned empty response")
+            return None
+
+        logger.info(f"Diary raw ({len(result)} chars): {result[:200]}")
+
+        # Parse: diary text + valence
+        import re
+        diary_text = ""
+        valence = 0.0
+        val_match = re.search(r'心情分[：:\s]*(-?[\d.]+)', result)
+        if val_match:
+            try:
+                valence = float(val_match.group(1))
+            except ValueError:
+                pass
+            diary_text = result[:val_match.start()].strip()
+        else:
+            diary_text = result.strip()
+        diary_text = re.sub(r'[（）()]', '', diary_text).strip().strip('"').strip()
+
+        if len(diary_text) < 20:
+            logger.warning(f"Diary too short ({len(diary_text)} chars)")
+            return None
+
+        # Store as single self_reflection memory
+        mem_id = _generate_id()
+        try:
+            pool_ = await get_pool()
+            async with pool_.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO memories (id, content, category, importance, "
+                        "original_importance, memory_type, valence, arousal, emotion_label, confidence) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (mem_id, diary_text, "self_reflection", 0.85, 0.85,
+                         "self_reflection", valence, 0.0, "", 0.8),
+                    )
+            try:
+                model = _get_embedding_model()
+                _mem_embedding_cache[mem_id] = {
+                    "emb": model.encode(diary_text).tolist(),
+                    "content": diary_text,
+                }
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"Diary: failed to store: {e}")
+            return None
+
+        # Apply to mood
+        try:
+            await self._apply_monologue_to_mood(diary_text, valence)
+        except Exception as e:
+            logger.debug(f"Diary→mood failed: {e}")
+
+        logger.info(f"Diary stored: {len(diary_text)} chars, valence={valence:+.2f}")
+        return {"diary": diary_text, "valence": valence}
+
     async def extract_and_store_memories(
         self,
         conversation_id: str,
@@ -2591,8 +2749,9 @@ class MemoryManager:
     # ── Sleep cleanup ──
 
     async def sleep_cleanup(self) -> dict:
-        """Daily memory maintenance: 5-phase sleep-inspired pipeline.
+        """Daily memory maintenance: 6-phase sleep-inspired pipeline.
 
+        Phase 0: Nightly diary — LLM summarizes today's conversations as a diary entry
         Phase 1: Synaptic downscaling (SHY) — proportional importance reduction
         Phase 2: Selective replay (TAG scoring) — strengthen/weaken based on priority
         Phase 3: Cluster merge (existing) — LLM deduplication within types
@@ -2601,6 +2760,15 @@ class MemoryManager:
         """
         result = {}
         pool = await get_pool()
+
+        # Phase 0: Nightly diary (LLM, runs before downscale so memories are fresh)
+        if settings.DIARY_ENABLED:
+            try:
+                diary = await self._generate_diary()
+                if diary:
+                    result["diary"] = f"{len(diary['diary'])} chars, valence={diary['valence']:+.2f}"
+            except Exception as e:
+                logger.warning(f"Diary generation failed: {e}")
 
         # Phase 1: Synaptic downscaling (zero LLM)
         if settings.SLEEP_DOWNSCALE_ENABLED:

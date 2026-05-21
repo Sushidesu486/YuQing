@@ -13,6 +13,7 @@ interface SSEData {
   dominant_emotion?: string;
 }
 
+const MESSAGE_PAGE_SIZE = 50;
 const CONVERSATION_KEY = 'yuqing_conversation_id';
 const COOLDOWN_MS = 20000;
 
@@ -23,11 +24,14 @@ export function useChat() {
   const [isTyping, setIsTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const conversationIdRef = useRef<string | null>(localStorage.getItem(CONVERSATION_KEY));
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<string[]>([]);
   const sendingRef = useRef(false);
   const esRef = useRef<EventSource | null>(null);
+  const loadedCountRef = useRef(0);
 
   const initSession = useCallback(async () => {
     setLoading(true);
@@ -36,9 +40,14 @@ export function useChat() {
       if (savedId) {
         conversationIdRef.current = savedId;
         try {
-          const data = await api.get<{ messages: Message[] }>(`/conversations/${savedId}`);
+          const data = await api.get<{ messages: Message[]; total: number; has_more: boolean }>(
+            `/conversations/${savedId}?limit=${MESSAGE_PAGE_SIZE}&offset=0`
+          );
           if (data.messages && data.messages.length > 0) {
-            setMessages(data.messages);
+            // Backend returns DESC (newest first), reverse for chronological display
+            setMessages(data.messages.reverse());
+            loadedCountRef.current = data.messages.length;
+            setHasMore(data.has_more);
             setLoading(false);
             return;
           }
@@ -51,6 +60,8 @@ export function useChat() {
       conversationIdRef.current = conv.id;
       localStorage.setItem(CONVERSATION_KEY, conv.id);
       setMessages([]);
+      loadedCountRef.current = 0;
+      setHasMore(false);
     } catch (e) {
       console.error('Failed to init session:', e);
       setMessages([]);
@@ -58,6 +69,32 @@ export function useChat() {
       setLoading(false);
     }
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    const convId = conversationIdRef.current;
+    if (!convId) return;
+
+    setLoadingMore(true);
+    try {
+      const offset = loadedCountRef.current;
+      const data = await api.get<{ messages: Message[]; total: number; has_more: boolean }>(
+        `/conversations/${convId}?limit=${MESSAGE_PAGE_SIZE}&offset=${offset}`
+      );
+      if (data.messages && data.messages.length > 0) {
+        // Backend returns DESC, reverse for chronological order and prepend
+        const olderMessages = data.messages.reverse();
+        loadedCountRef.current += olderMessages.length;
+        setHasMore(data.has_more);
+        setMessages((prev) => [...olderMessages, ...prev]);
+        return olderMessages.length;
+      }
+    } catch (e) {
+      console.error('Failed to load more messages:', e);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore]);
 
   const flushMessages = useCallback(() => {
     if (sendingRef.current) return;
@@ -237,7 +274,6 @@ export function useChat() {
       // Check if user is sending a sticker
       const stickerMatch = content.trim().match(/^\/([\w]+\/[\w]+)$/);
       if (stickerMatch) {
-        const stickerName = stickerMatch[1];
         // Send sticker directly via API
         const convId = conversationIdRef.current;
         const lang = localStorage.getItem('language') || 'zh';
@@ -336,9 +372,12 @@ export function useChat() {
     isTyping,
     error,
     loading,
+    hasMore,
+    loadingMore,
     sendMessage,
     initSession,
     addProactiveMessage,
+    loadMore,
     conversationId: conversationIdRef.current,
   };
 }

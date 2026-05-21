@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
 from app.core.memory import _get_embedding_model, maybe_unload_idle_model
-from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive
+from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive, diary
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task, close_http_session
 from app.core.openai_client import close_openai_session
@@ -103,6 +103,7 @@ app.include_router(emotions.router)
 app.include_router(settings.router)
 app.include_router(preferences.router)
 app.include_router(proactive.router)
+app.include_router(diary.router)
 
 
 @app.get("/")

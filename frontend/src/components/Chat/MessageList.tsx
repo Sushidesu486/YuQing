@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import type { Message } from '../../types';
 import { MessageBubble } from './MessageBubble';
 
@@ -6,6 +6,9 @@ interface Props {
   messages: Message[];
   isStreaming: boolean;
   highlightMessageId?: string | null;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 function formatTimeDivider(dateStr: string): string {
@@ -31,13 +34,27 @@ function shouldShowDivider(current: Message, prev: Message | null): boolean {
   return diff > 5 * 60 * 1000; // 5 minutes
 }
 
-export function MessageList({ messages, isStreaming, highlightMessageId }: Props) {
+export function MessageList({ messages, isStreaming, highlightMessageId, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevScrollHeightRef = useRef(0);
+  const prevMessagesLengthRef = useRef(messages.length);
 
   useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // If messages grew (loadMore prepended), preserve scroll position
+    if (messages.length > prevMessagesLengthRef.current && prevScrollHeightRef.current > 0) {
+      const newScrollHeight = el.scrollHeight;
+      el.scrollTop = newScrollHeight - prevScrollHeightRef.current;
+      prevScrollHeightRef.current = 0;
+    }
+
+    prevMessagesLengthRef.current = messages.length;
+
     if (isAtBottomRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
@@ -60,11 +77,17 @@ export function MessageList({ messages, isStreaming, highlightMessageId }: Props
     };
   }, [highlightMessageId]);
 
-  const handleScroll = () => {
+  const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-  };
+
+    // Load more when scrolled near the top
+    if (el.scrollTop < 50 && hasMore && !loadingMore && onLoadMore) {
+      prevScrollHeightRef.current = el.scrollHeight;
+      onLoadMore();
+    }
+  }, [hasMore, loadingMore, onLoadMore]);
 
   if (messages.length === 0) {
     return (
@@ -83,6 +106,18 @@ export function MessageList({ messages, isStreaming, highlightMessageId }: Props
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto py-4 chat-bg"
     >
+      {/* Top loading indicator */}
+      {loadingMore && (
+        <div className="flex justify-center pb-3">
+          <span className="text-xs text-gray-400 dark:text-gray-500 animate-pulse">加载中...</span>
+        </div>
+      )}
+      {!hasMore && messages.length > 0 && (
+        <div className="flex justify-center pb-3">
+          <span className="text-xs text-gray-300 dark:text-gray-600">—— 已加载全部消息 ——</span>
+        </div>
+      )}
+
       {messages.map((msg, i) => {
         const prev = i > 0 ? messages[i - 1] : null;
         const showDivider = shouldShowDivider(msg, prev);

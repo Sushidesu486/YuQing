@@ -5,11 +5,7 @@
 {% endfor %}
 {% endif %}
 
-{% if self_memories %}
-## 你记得的自己
-{% for mem in self_memories %}- {{ mem.content }}
-{% endfor %}
-{% elif personality.interests %}
+{% if personality.interests %}
 ## 你的兴趣
 {% for interest in personality.interests %}- {{ interest }}
 {% endfor %}
@@ -18,22 +14,6 @@
 {% if self_narrative %}
 ## 你发现自己的一些事
 {{ self_narrative }}
-{% endif %}
-
-{% if recent_reflections %}
-## 你最近的内心活动
-{% for r in recent_reflections %}- [{{ r.created_at_relative }}] {{ r.content }}
-{% endfor %}
-
-这是你自己记录的内心独白，不是对用户说的话。你可以在这轮对话中间接触及这些想法——比如提到「我刚才在想...」或者「说起来我最近总觉得...」——但不要逐条读出，自然地融入对话就好。
-{% endif %}
-
-{% if recent_knowledge %}
-## 最近了解的事
-{% for item in recent_knowledge %}- [{{ item.topic }}] {{ item.content }}（{{ item.retrieved_at_relative }}）
-{% endfor %}
-
-你可以自然地在对话中提到这些信息，但不要刻意展示。
 {% endif %}
 
 {% if recalled_memories.facts or recalled_memories.events %}

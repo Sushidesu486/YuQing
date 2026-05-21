@@ -143,13 +143,6 @@ class PersonalityEngine:
         except Exception as e:
             logger.debug(f"Failed to load preferences: {e}")
 
-        try:
-            from app.core.memory import memory_manager
-            self_memories = await memory_manager.get_self_memories(limit=8)
-        except Exception as e:
-            logger.debug(f"Failed to load self memories: {e}")
-            self_memories = None
-
         self_narrative = None
         try:
             from app.core.self_cognition import self_cognition_engine
@@ -171,13 +164,6 @@ class PersonalityEngine:
             tool_descriptions = tool_registry.get_tool_descriptions_prompt(language=language)
         except Exception as e:
             logger.debug(f"Failed to load tool descriptions: {e}")
-
-        recent_reflections = None
-        try:
-            from app.core.memory import memory_manager as mm
-            recent_reflections = await mm.get_self_reflections(limit=5)
-        except Exception as e:
-            logger.debug(f"Failed to load self reflections: {e}")
 
         today_topics = None
         today_exchange_log = None
@@ -221,14 +207,12 @@ class PersonalityEngine:
             recalled_memories=recalled_memories or {},
             preference_hints=preference_hints,
             yuqing_mood=yuqing_mood,
-            self_memories=self_memories,
             self_narrative=self_narrative,
             recent_knowledge=recent_knowledge,
             temporal_context=temporal_context,
             tool_descriptions=tool_descriptions,
             emotion_trajectory=emotion_trajectory,
             emotion_profile=emotion_profile,
-            recent_reflections=recent_reflections,
             today_topics=today_topics,
             today_exchange_log=today_exchange_log,
         )
