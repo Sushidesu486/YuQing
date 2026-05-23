@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     DIARY_ENABLED: bool = True                  # Sleep cleanup Phase 0: 雨晴每日日记
     EMOTION_MEMORY_ENABLED: bool = False         # 关闭 emotion 类型记忆提取（日记替代）
 
+    # YuQing Poster (daily 说说/朋友圈)
+    POSTER_ENABLED: bool = True                  # 是否启用说说功能
+    POSTER_AUTO_HOUR: int = 9                    # 每天自动发帖时间（小时，0-23）
+
     # Memory layered injection
     MEMORY_FACT_TOP_K: int = 8
     MEMORY_BEHAVIOR_RULES_MAX: int = 8

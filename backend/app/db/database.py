@@ -148,6 +148,18 @@ CREATE TABLE IF NOT EXISTS memory_links (
     INDEX idx_target (target_id),
     UNIQUE INDEX idx_pair (source_id, target_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS yuqing_posts (
+    id CHAR(32) PRIMARY KEY,
+    content TEXT NOT NULL,
+    mood_label VARCHAR(32) DEFAULT NULL,
+    warmth FLOAT DEFAULT NULL,
+    openness FLOAT DEFAULT NULL,
+    energy FLOAT DEFAULT NULL,
+    trigger_type VARCHAR(32) DEFAULT 'auto',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_posts_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 

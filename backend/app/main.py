@@ -7,11 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import init_db, close_pool
 from app.core.memory import _get_embedding_model, maybe_unload_idle_model
-from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive, diary
+from app.api.routes import chat, conversations, health, personality, memory, emotions, settings, preferences, proactive, diary, posts
 from app.core.proactive import proactive_background_task
 from app.core.info_retrieval import info_retrieval_background_task, close_http_session
 from app.core.openai_client import close_openai_session
 from app.core.memory import sleep_cleanup_background_task
+from app.core.poster import poster_background_task
 
 
 class ColoredFormatter(logging.Formatter):
@@ -59,20 +60,22 @@ async def lifespan(app: FastAPI):
 
     logger.info("Database and embedding model ready")
 
-    # Start proactive background task
-    task = asyncio.create_task(proactive_background_task())
+    # Start background tasks
+    proactive_task = asyncio.create_task(proactive_background_task())
     info_task = asyncio.create_task(info_retrieval_background_task())
     cleanup_task = asyncio.create_task(sleep_cleanup_background_task())
     model_gc_task = asyncio.create_task(model_idle_gc_task())
+    poster_task = asyncio.create_task(poster_background_task())
 
     yield
 
     # Cancel background tasks on shutdown
-    task.cancel()
+    proactive_task.cancel()
     info_task.cancel()
     cleanup_task.cancel()
     model_gc_task.cancel()
-    for t in (task, info_task, cleanup_task, model_gc_task):
+    poster_task.cancel()
+    for t in (proactive_task, info_task, cleanup_task, model_gc_task, poster_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -104,6 +107,7 @@ app.include_router(settings.router)
 app.include_router(preferences.router)
 app.include_router(proactive.router)
 app.include_router(diary.router)
+app.include_router(posts.router)
 
 
 @app.get("/")
@@ -112,12 +116,19 @@ async def root():
 
 
 async def model_idle_gc_task():
-    """Background task: release embedding model after idle TTL."""
+    """Background task: release idle model + periodically clean PyTorch CPU allocator cache."""
     await asyncio.sleep(120)  # wait 2 min after startup
+    import gc
+    import torch
     from app.config import settings
     while True:
         try:
             maybe_unload_idle_model()
+            gc.collect()
+            try:
+                torch.cpu.empty_cache()
+            except Exception:
+                pass
         except Exception as e:
             logger.debug(f"Model GC check failed: {e}")
         await asyncio.sleep(300)  # check every 5 minutes
