@@ -112,7 +112,7 @@ export function PosterView({ open, onClose }: { open: boolean; onClose: () => vo
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M6 12L3.269 3.125A59.769 59.769 0 0121.485 12 59.768 59.768 0 013.27 20.875L5.999 12zm0 0h7.5" />
             </svg>
             <span className="text-sm">还没有说说</span>
-            <span className="text-xs mt-1">每天上午，雨晴会发一条说说</span>
+            <span className="text-xs mt-1">每天晚上，雨晴会发一条说说</span>
           </div>
         )}
         {posts.map((post) => {

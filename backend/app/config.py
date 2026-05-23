@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # YuQing Poster (daily 说说/朋友圈)
     POSTER_ENABLED: bool = True                  # 是否启用说说功能
-    POSTER_AUTO_HOUR: int = 9                    # 每天自动发帖时间（小时，0-23）
+    POSTER_AUTO_HOUR: int = 21                   # 每天自动发帖时间（晚上9点，有足够聊天内容）
 
     # Memory layered injection
     MEMORY_FACT_TOP_K: int = 8
