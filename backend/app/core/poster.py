@@ -77,9 +77,20 @@ class PosterEngine:
         today_exchange = "（今天还没有聊天）"
         try:
             from app.core.memory import memory_manager
-            log = await memory_manager.get_today_exchange_log("", max_rounds=5)
-            if log:
-                today_exchange = "；".join(log[-3:])
+            from app.db.database import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT id FROM conversations "
+                        "WHERE updated_at >= CURDATE() "
+                        "ORDER BY updated_at DESC LIMIT 1"
+                    )
+                    conv = await cur.fetchone()
+            if conv:
+                log = await memory_manager.get_today_exchange_log(conv["id"], max_rounds=5)
+                if log:
+                    today_exchange = "；".join(log[-3:])
         except Exception:
             pass
 
