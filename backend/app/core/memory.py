@@ -419,6 +419,12 @@ async def _load_mem_cache():
         return
     contents = [r["content"] for r in rows]
     embeddings = model.encode(contents, show_progress_bar=False)
+    # Release PyTorch CPU allocator cache (prevents memory bloat on macOS)
+    try:
+        import torch
+        torch.cpu.empty_cache()
+    except Exception:
+        pass
     _mem_embedding_cache.clear()
     for r, emb in zip(rows, embeddings):
         _mem_embedding_cache[r["id"]] = {
@@ -2070,6 +2076,11 @@ class MemoryManager:
                     sim = _cosine_similarity(query_emb, cand_emb)
                     scored.append((sim, candidates[idx]))
                     cache[candidates[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
+                try:
+                    import torch
+                    torch.cpu.empty_cache()
+                except Exception:
+                    pass
             except Exception:
                 for idx in text_indices:
                     scored.append((0.0, candidates[idx]))
@@ -2294,6 +2305,11 @@ class MemoryManager:
                     days_dormant = (datetime.utcnow() - (dormant_rows[idx]["last_accessed"] or dormant_rows[idx]["created_at"])).days
                     scored.append((sim, days_dormant, dormant_rows[idx]))
                     cache[dormant_rows[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
+                try:
+                    import torch
+                    torch.cpu.empty_cache()
+                except Exception:
+                    pass
 
             scored.sort(key=lambda x: x[0], reverse=True)
             results = []

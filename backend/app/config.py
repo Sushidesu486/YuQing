@@ -118,7 +118,7 @@ class Settings(BaseSettings):
 
     # Embedding model (local BGE for semantic search)
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
-    EMBEDDING_MODEL_IDLE_TTL_MINUTES: int = 30   # 空闲超时后释放模型，下次使用时自动重载
+    EMBEDDING_MODEL_IDLE_TTL_MINUTES: int = 15   # 空闲超时后释放模型，下次使用时自动重载
 
     # Tool calling
     TOOLS_ENABLED: bool = True
