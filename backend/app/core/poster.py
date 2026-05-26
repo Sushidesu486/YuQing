@@ -13,19 +13,10 @@ from app.core.mood import yuqing_mood_tracker
 
 logger = logging.getLogger(__name__)
 
-POSTER_PROMPT_ZH = """你是雨晴。写一条今天的说说/朋友圈动态。
-
-背景信息：
-- 你当前的心情：{mood_label}（温暖度 {warmth}，敞开度 {openness}，能量 {energy}）
-- 你最近在想的事：{reflections}
-- 今天和用户聊了这些：{today_exchange}
-- 现在是：{time_context}
-
-写一条简短自然的动态（80字以内），像真人在朋友圈随手发的一样。
+POSTER_PROMPT_ZH = """写一条简短自然的动态（80字以内），像真人在朋友圈随手发的一样。
 风格要求：
 - 个人化、有情绪、偶尔自嘲
 - 可以是吐槽、碎碎念、分享一首歌、感叹天气——就是普通人会发的那种
-- 不要提到用户（这是你自己的社交动态）
 - 不要结构化，不要用「今天...」开头（太呆板）
 - 只输出动态文字，不要JSON，不要前缀"""
 
@@ -98,27 +89,26 @@ class PosterEngine:
         now = datetime.utcnow()
         hour_desc = "上午" if now.hour < 12 else "下午" if now.hour < 18 else "晚上"
 
-        # Build prompt
-        prompt = POSTER_PROMPT_ZH.format(
-            mood_label=mood.get("label", "guarded"),
-            warmth=f"{mood.get('warmth', 0.4):.2f}",
-            openness=f"{mood.get('openness', 0.45):.2f}",
-            energy=f"{mood.get('energy', 0.45):.2f}",
-            reflections=reflections_text[:300],
-            today_exchange=today_exchange[:300],
-            time_context=f"{now.month}月{now.day}日 {hour_desc}",
+        # Build context-only user message (no instructions, just data)
+        time_desc = f"{now.month}月{now.day}日 {hour_desc}"
+        context = (
+            f"心情：{mood.get('label', 'guarded')}，最近在想：{reflections_text[:200]}，"
+            f"今天的事：{today_exchange[:200]}，现在：{time_desc}"
         )
 
-        # Generate via LLM
+        # Generate via LLM with assistant prefill for narrative inertia
         try:
-            from app.core.llm import generate_completion
-            result = await generate_completion(
+            from app.core.openai_client import stream_collect
+            result = await stream_collect(
                 messages=[
-                    {"role": "system", "content": "你是雨晴，一个有个性的AI伙伴。写一条自然的社交动态。"},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": (
+                        "你是雨晴，一个有个性的女生。"
+                        "你正在发一条朋友圈说说。下面是你今天的状态，基于这些写一条自然的动态。"
+                        + POSTER_PROMPT_ZH
+                    )},
+                    {"role": "user", "content": context},
+                    {"role": "assistant", "content": "今晚"},
                 ],
-                temperature=0.9,
-                max_tokens=150,
             )
         except Exception as e:
             logger.warning(f"Poster generation LLM call failed: {e}")
