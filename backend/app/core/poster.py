@@ -85,6 +85,59 @@ class PosterEngine:
         except Exception:
             pass
 
+        # Recent important memories about the user (facts/events)
+        user_memories_text = "（暂无）"
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT content FROM memories "
+                        "WHERE memory_type IN ('fact','event','preference','episodic') "
+                        "AND is_invalid = 0 AND importance > 0.3 "
+                        "ORDER BY importance DESC LIMIT 5"
+                    )
+                    rows = await cur.fetchall()
+            if rows:
+                user_memories_text = "；".join(r["content"][:80] for r in rows)
+        except Exception:
+            pass
+
+        # Recent emotion patterns
+        emotion_text = "（暂无）"
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT content FROM memories "
+                        "WHERE memory_type = 'emotion' AND is_invalid = 0 "
+                        "ORDER BY created_at DESC LIMIT 3"
+                    )
+                    rows = await cur.fetchall()
+            if rows:
+                emotion_text = "；".join(r["content"][:60] for r in rows)
+        except Exception:
+            pass
+
+        # Today's recalled memories (what she kept thinking about)
+        recalled_text = "（暂无）"
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT content FROM memories "
+                        "WHERE last_accessed >= CURDATE() AND is_invalid = 0 "
+                        "AND memory_type NOT LIKE 'self_%' "
+                        "ORDER BY access_count DESC LIMIT 3"
+                    )
+                    rows = await cur.fetchall()
+            if rows:
+                recalled_text = "；".join(r["content"][:80] for r in rows)
+        except Exception:
+            pass
+
         # Time context
         now = datetime.utcnow()
         hour_desc = "上午" if now.hour < 12 else "下午" if now.hour < 18 else "晚上"
@@ -92,8 +145,11 @@ class PosterEngine:
         # Build context-only user message (no instructions, just data)
         time_desc = f"{now.month}月{now.day}日 {hour_desc}"
         context = (
-            f"心情：{mood.get('label', 'guarded')}，最近在想：{reflections_text[:200]}，"
-            f"今天的事：{today_exchange[:200]}，现在：{time_desc}"
+            f"心情：{mood.get('label', 'guarded')}，最近在想：{reflections_text[:150]}，"
+            f"记得关于他的事：{user_memories_text[:150]}，"
+            f"他最近的情绪：{emotion_text[:100]}，"
+            f"今天反复想起：{recalled_text[:120]}，"
+            f"今天的事：{today_exchange[:150]}，现在：{time_desc}"
         )
 
         # Generate via LLM with assistant prefill for narrative inertia
@@ -103,7 +159,7 @@ class PosterEngine:
                 messages=[
                     {"role": "system", "content": (
                         "你是雨晴，一个有个性的女生。"
-                        "你正在发一条朋友圈说说。下面是你今天的状态，基于这些写一条自然的动态。"
+                        "你正在发一条朋友圈说说。下面是你今天的状态和他相关的事，基于这些写一条自然的动态。"
                         + POSTER_PROMPT_ZH
                     )},
                     {"role": "user", "content": context},
