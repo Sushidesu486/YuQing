@@ -94,7 +94,7 @@ class PosterEngine:
                     await cur.execute(
                         "SELECT content FROM memories "
                         "WHERE memory_type IN ('fact','event','preference','episodic') "
-                        "AND is_invalid = 0 AND importance > 0.3 "
+                        "AND is_invalid = 0 AND importance > 0.5 "
                         "ORDER BY importance DESC LIMIT 5"
                     )
                     rows = await cur.fetchall()
