@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from app.core.poster import poster_engine
 
-router = APIRouter()
+router = APIRouter(prefix="/api", tags=["posts"])
 
 
 @router.get("/posts")
