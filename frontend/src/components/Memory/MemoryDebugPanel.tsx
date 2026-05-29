@@ -687,8 +687,8 @@ function GraphTab() {
           linkWidth={link => 1 + link.strength * 3}
           linkColor={link => {
             if (hoveredNode) {
-              const src = typeof link.source === 'object' ? link.source.id : link.source;
-              const tgt = typeof link.target === 'object' ? link.target.id : link.target;
+              const src = typeof link.source === 'object' ? (link.source as GraphNode).id : link.source;
+              const tgt = typeof link.target === 'object' ? (link.target as GraphNode).id : link.target;
               if (src === hoveredNode.id || tgt === hoveredNode.id) return 'rgba(99,102,241,0.7)';
               return 'rgba(0,0,0,0.03)';
             }
