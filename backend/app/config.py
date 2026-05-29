@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     TEMPORAL_ENERGY_NIGHT_PENALTY: float = 0.05 # energy drop during late night
 
     # Embedding model (local BGE for semantic search)
-    EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
+    EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
     EMBEDDING_MODEL_IDLE_TTL_MINUTES: int = 30   # 空闲超时后释放模型，下次使用时自动重载
 
     # Tool calling

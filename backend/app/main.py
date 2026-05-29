@@ -112,12 +112,23 @@ async def root():
 
 
 async def model_idle_gc_task():
-    """Background task: release embedding model after idle TTL."""
+    """Background task: release idle model + periodically clean GPU/CPU memory."""
     await asyncio.sleep(120)  # wait 2 min after startup
+    import gc
+    import torch
     from app.config import settings
     while True:
         try:
             maybe_unload_idle_model()
+            gc.collect()
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                torch.cpu.empty_cache()
+            except Exception:
+                pass
         except Exception as e:
             logger.debug(f"Model GC check failed: {e}")
         await asyncio.sleep(300)  # check every 5 minutes

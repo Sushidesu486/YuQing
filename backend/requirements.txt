@@ -9,3 +9,9 @@ sse-starlette>=1.6.0
 python-dotenv>=1.0.0
 cryptography>=41.0.0
 sentence-transformers>=2.0.0
+
+# 对于 GPU 加速 (NVIDIA RTX 4060 / CUDA 12.4):
+# 先安装上述依赖，然后用 PyTorch CUDA 版覆盖 CPU 版:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+# 验证: python3 -c "import torch; print(torch.cuda.is_available())"

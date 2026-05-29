@@ -1,0 +1,18 @@
+[Unit]
+Description=YuQing AI Companion - Backend
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=yuqing
+WorkingDirectory=/opt/yuqing/backend
+Environment="PATH=/opt/yuqing/backend/.venv/bin:/usr/local/bin:/usr/bin"
+Environment="PYTHONPATH=/opt/yuqing/backend"
+ExecStart=/opt/yuqing/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/yuqing/logs/backend.log
+StandardError=append:/opt/yuqing/logs/backend.log
+
+[Install]
+WantedBy=multi-user.target
