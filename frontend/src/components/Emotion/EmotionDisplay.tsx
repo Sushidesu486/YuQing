@@ -1,4 +1,3 @@
-import React from 'react';
 import { getEmotionLabel, getEmotionColor, getEmotionEmoji } from '../../utils/emotionUtils';
 
 interface Props {
@@ -13,10 +12,6 @@ export function EmotionDisplay({ valence, arousal }: Props) {
 
   // Map to position in a 200x200 box
   // valence: -1 (left) to +1 (right) → x: 20 to 180
-  // arousal: 0 (bottom) to 1 (top) → y: 180 to 20
-  const x = 100 + valence * 80;
-  const y = 180 - arousal * 160;
-
   return (
     <div className="flex items-center gap-3">
       <div className="text-2xl">{emoji}</div>
