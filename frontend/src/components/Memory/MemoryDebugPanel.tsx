@@ -638,7 +638,7 @@ function GraphTab() {
           ref={graphRef}
           graphData={graphData}
           nodeLabel={node => {
-            const m = memoryMap.get(node.id);
+            const m = memoryMap.get(node.id as string);
             if (!m) return '';
             const lines = [
               m.content.length > 80 ? m.content.slice(0, 80) + '...' : m.content,
