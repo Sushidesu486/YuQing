@@ -653,7 +653,7 @@ function GraphTab() {
             }
             return node.color;
           }}
-          nodeVal={node => node.val}
+          nodeVal={node => node.val ?? 3}
           nodeCanvasObjectMode={() => 'after'}
           nodeCanvasObject={(node, ctx, globalScale) => {
             const label = memoryMap.get(node.id)?.content ?? '';
