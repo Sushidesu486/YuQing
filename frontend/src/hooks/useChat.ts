@@ -11,6 +11,11 @@ interface SSEData {
   valence?: number;
   arousal?: number;
   dominant_emotion?: string;
+  tool?: string;
+  status?: string;
+  display?: string;
+  name?: string;
+  sender?: string;
 }
 
 const MESSAGE_PAGE_SIZE = 50;
