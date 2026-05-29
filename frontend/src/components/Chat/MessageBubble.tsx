@@ -1,4 +1,3 @@
-import React from 'react';
 import type { Message } from '../../types';
 
 const YUQING_AVATAR = '/avatar-yuqing.png';

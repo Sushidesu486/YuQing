@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { useChat } from '../../hooks/useChat';
 import { useProactive } from '../../hooks/useProactive';
 import { MessageList } from './MessageList';
