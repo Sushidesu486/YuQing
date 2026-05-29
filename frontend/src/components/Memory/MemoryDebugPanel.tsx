@@ -579,8 +579,8 @@ function GraphTab() {
     if (!searchMatchIds || searchMatchIds.size === 0 || !graphRef.current) return;
     const firstId = [...searchMatchIds][0];
     const node = graphData.nodes.find(n => n.id === firstId);
-    if (node && node.x !== undefined && node.y !== undefined) {
-      graphRef.current.centerAt(node.x, node.y, 800);
+    if (node && (node as any).x !== undefined && (node as any).y !== undefined) {
+      graphRef.current.centerAt((node as any).x, (node as any).y, 800);
       graphRef.current.zoom(2, 800);
     }
   }, [searchMatchIds, graphData]);
@@ -708,7 +708,7 @@ function GraphTab() {
           enableNodeDrag={true}
           enableZoomInteraction={true}
           enablePanInteraction={true}
-          d3={{ forceCharge: { strength: -120 }, forceLink: { distance: 100 } }}
+          {...{ d3: { forceCharge: { strength: -120 }, forceLink: { distance: 100 } } } as any}
           backgroundColor="#f9fafb"
         />
       </div>
