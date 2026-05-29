@@ -649,14 +649,14 @@ function GraphTab() {
           }}
           nodeColor={node => {
             if (highlightIds) {
-              return highlightIds.has(node.id) ? node.color : 'rgba(200,200,200,0.15)';
+              return highlightIds.has(node.id as string) ? node.color : 'rgba(200,200,200,0.15)';
             }
             return node.color;
           }}
           nodeVal={node => node.val ?? 3}
           nodeCanvasObjectMode={() => 'after'}
           nodeCanvasObject={(node, ctx, globalScale) => {
-            const label = memoryMap.get(node.id)?.content ?? '';
+            const label = memoryMap.get(node.id as string)?.content ?? '';
             if (!label) return;
             const fontSize = 10 / globalScale;
             ctx.font = `${fontSize}px Sans-Serif`;
