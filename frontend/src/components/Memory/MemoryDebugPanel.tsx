@@ -506,6 +506,18 @@ function GraphTab() {
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const graphRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ width: 800, height: 600 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setDims({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -633,9 +645,11 @@ function GraphTab() {
         )}
       </div>
 
-      <div className="flex-1 relative">
+      <div ref={containerRef} className="flex-1 relative">
         <ForceGraph2D
           ref={graphRef}
+          width={dims.width}
+          height={dims.height}
           graphData={graphData}
           nodeLabel={node => {
             const m = memoryMap.get(node.id as string);
