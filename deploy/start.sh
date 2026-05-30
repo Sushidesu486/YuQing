@@ -65,11 +65,12 @@ FRONTEND_PID=$!
 echo "   前端 PID: $FRONTEND_PID  日志: $LOG_DIR/frontend.log"
 echo "$FRONTEND_PID" > "$LOG_DIR/frontend.pid"
 
+LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
 echo "============================================"
 echo "  YuQing 已启动"
-echo "  后端: http://\$(hostname -I 2>/dev/null | awk '{print \$1}'):8000"
-echo "  前端: http://\$(hostname -I 2>/dev/null | awk '{print \$1}'):5173"
+echo "  后端: http://${LOCAL_IP:-localhost}:8000"
+echo "  前端: http://${LOCAL_IP:-localhost}:5173"
 echo "  日志: $LOG_DIR/"
 echo ""
 echo "  SSH 隧道 (Mac 端):"
