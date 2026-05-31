@@ -1,8 +1,14 @@
 #!/bin/bash
 # YuQing 状态查看
+# 用法:
+#   bash deploy/status.sh           # 快照
+#   bash deploy/status.sh --watch   # 快照 + 实时日志监控
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$PROJECT_DIR/logs"
+
+WATCH=false
+[ "$1" = "--watch" ] || [ "$1" = "-w" ] && WATCH=true
 
 echo "=== YuQing 状态 ==="
 echo ""
@@ -44,11 +50,26 @@ for pidfile in backend.pid frontend.pid; do
 done
 echo ""
 
-echo "=== 最近日志 ==="
-for logfile in backend.log frontend.log; do
-    if [ -f "$LOG_DIR/$logfile" ]; then
-        echo "--- $logfile (最后 5 行) ---"
-        tail -5 "$LOG_DIR/$logfile"
-        echo ""
+if $WATCH; then
+    echo "=== 实时日志 (Ctrl+C 退出) ==="
+    echo ""
+    trap 'exit 0' INT
+    BACKEND="$LOG_DIR/backend.log"
+    FRONTEND="$LOG_DIR/frontend.log"
+    if [ -f "$BACKEND" ] && [ -f "$FRONTEND" ]; then
+        tail -f "$BACKEND" "$FRONTEND"
+    elif [ -f "$BACKEND" ]; then
+        tail -f "$BACKEND"
+    elif [ -f "$FRONTEND" ]; then
+        tail -f "$FRONTEND"
     fi
-done
+else
+    echo "=== 最近日志 ==="
+    for logfile in backend.log frontend.log; do
+        if [ -f "$LOG_DIR/$logfile" ]; then
+            echo "--- $logfile (最后 5 行) ---"
+            tail -5 "$LOG_DIR/$logfile"
+            echo ""
+        fi
+    done
+fi
