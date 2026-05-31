@@ -87,13 +87,11 @@ class LogWatcher:
                 f.seek(self._pos)
                 for line in f:
                     self._pending.append(line.rstrip("\n") if line.endswith("\n") else line)
-            self._pos = f.tell()
-
-    def commit(self):
-        for line in self._pending:
-            self.lines.append(line)
-        self.lines = self.lines[-5000:]
-        self._pending = []
+            try:
+                self._pos = f.tell()
+            except (OSError, ValueError):
+                self._pos = os.path.getsize(self.path)
+            self._pending = []
 
     def visible(self, n: int) -> list[str]:
         if self.scroll > 0:
@@ -272,8 +270,14 @@ def main():
         live.start()
         esc_buf = ""
         while True:
-            bw.poll()
-            fw.poll()
+            try:
+                bw.poll()
+            except (OSError, ValueError, IOError):
+                pass
+            try:
+                fw.poll()
+            except (OSError, ValueError, IOError):
+                pass
             bw.commit()
             fw.commit()
 
