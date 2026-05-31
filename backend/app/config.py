@@ -121,8 +121,8 @@ class Settings(BaseSettings):
     TEMPORAL_ENERGY_NIGHT_PENALTY: float = 0.05 # energy drop during late night
 
     # Embedding model (local BGE for semantic search)
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    EMBEDDING_MODEL_IDLE_TTL_MINUTES: int = 30   # 空闲超时后释放模型，下次使用时自动重载
+    EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
+    EMBEDDING_MODEL_IDLE_TTL_MINUTES: int = 15   # 空闲超时后释放模型，下次使用时自动重载
 
     # Tool calling
     TOOLS_ENABLED: bool = True
@@ -181,15 +181,21 @@ class Settings(BaseSettings):
 
     # Sleep cleanup: synaptic downscaling (SHY)
     SLEEP_DOWNSCALE_ENABLED: bool = True
-    SLEEP_DOWNSCALE_FACTOR: float = 0.03          # importance *= (1 - factor)
+    SLEEP_DOWNSCALE_FACTOR: float = 0.05          # importance *= (1 - factor), 每天衰减 5%
 
     # Sleep cleanup: selective replay (TAG scoring)
     SLEEP_REPLAY_ENABLED: bool = True
-    SLEEP_REPLAY_STRENGTHEN: float = 0.05         # TAG >= 0.5: importance += this
-    SLEEP_REPLAY_WEAKEN: float = 0.03             # TAG < 0.3: importance -= this
+    SLEEP_REPLAY_STRENGTHEN: float = 0.08         # TAG >= 0.5: importance += this
+    SLEEP_REPLAY_WEAKEN: float = 0.05             # TAG < 0.3: importance -= this
 
     # Sleep cleanup: pruning stale memories + orphan links
     SLEEP_PRUNE_ENABLED: bool = True
+    SLEEP_PRUNE_TIER1_DAYS: int = 14               # importance < 0.05, no access N days → 删除
+    SLEEP_PRUNE_TIER2_DAYS: int = 28               # importance < 0.10, no access N days → 删除
+    SLEEP_PRUNE_TIER3_DAYS: int = 42               # importance < 0.15, no access N days → 删除
+
+    # Hard cap: maintain target memory count
+    MEMORY_TARGET_MAX: int = 1200                  # 超过此数量按 importance 从低到高删除
 
     # Debug
     LOG_LEVEL: str = "INFO"

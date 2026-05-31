@@ -419,9 +419,10 @@ async def _load_mem_cache():
         return
     contents = [r["content"] for r in rows]
     embeddings = model.encode(contents, show_progress_bar=False)
+    # Release PyTorch CPU allocator cache (prevents memory bloat on macOS)
     try:
         import torch
-        torch.cuda.empty_cache()
+        torch.cpu.empty_cache()
     except Exception:
         pass
     _mem_embedding_cache.clear()
@@ -2077,7 +2078,7 @@ class MemoryManager:
                     cache[candidates[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
                 try:
                     import torch
-                    torch.cuda.empty_cache()
+                    torch.cpu.empty_cache()
                 except Exception:
                     pass
             except Exception:
@@ -2306,7 +2307,7 @@ class MemoryManager:
                     cache[dormant_rows[idx]["id"]] = {"emb": cand_emb, "content": texts_to_encode[j]}
                 try:
                     import torch
-                    torch.cuda.empty_cache()
+                    torch.cpu.empty_cache()
                 except Exception:
                     pass
 
@@ -2963,42 +2964,65 @@ class MemoryManager:
         """Physically delete stale memories and weak links.
 
         Prune rules (must meet BOTH importance AND time conditions):
-        - importance < 0.05  AND no access in 30 days  (or never accessed)
-        - importance < 0.10  AND no access in 60 days
-        - importance < 0.15  AND no access in 90 days
+        - importance < 0.05  AND no access in tier1_days
+        - importance < 0.10  AND no access in tier2_days
+        - importance < 0.15  AND no access in tier3_days
 
+        After tier pruning, if total memories still exceed MEMORY_TARGET_MAX,
+        delete the lowest-importance memories down to the target.
         Also delete links with strength < 0.05.
         """
         pool = await get_pool()
         pruned_memories = 0
+        t1 = settings.SLEEP_PRUNE_TIER1_DAYS
+        t2 = settings.SLEEP_PRUNE_TIER2_DAYS
+        t3 = settings.SLEEP_PRUNE_TIER3_DAYS
 
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                # Tier 1: very low importance + 30 days
+                # Tier 1: very low importance + t1 days
                 await cur.execute(
                     "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
                     "AND importance < 0.05 "
-                    "AND (last_accessed IS NULL OR last_accessed < DATE_SUB(NOW(), INTERVAL 30 DAY))"
+                    "AND (last_accessed IS NULL OR last_accessed < DATE_SUB(NOW(), INTERVAL %s DAY))",
+                    (t1,),
                 )
                 tier1 = cur.rowcount
 
-                # Tier 2: low importance + 60 days
+                # Tier 2: low importance + t2 days
                 await cur.execute(
                     "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
                     "AND importance < 0.10 "
-                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL 60 DAY)"
+                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL %s DAY)",
+                    (t2,),
                 )
                 tier2 = cur.rowcount
 
-                # Tier 3: moderate importance + 90 days
+                # Tier 3: moderate importance + t3 days
                 await cur.execute(
                     "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
                     "AND importance < 0.15 "
-                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL 90 DAY)"
+                    "AND last_accessed < DATE_SUB(NOW(), INTERVAL %s DAY)",
+                    (t3,),
                 )
                 tier3 = cur.rowcount
 
                 pruned_memories = tier1 + tier2 + tier3
+
+                # Hard cap: if still over target, delete lowest-importance memories
+                await cur.execute("SELECT COUNT(*) as cnt FROM memories WHERE is_invalid = 0")
+                total = (await cur.fetchone())[0]
+                target = settings.MEMORY_TARGET_MAX
+                overage = total - target
+                if overage > 0:
+                    await cur.execute(
+                        "DELETE FROM memories WHERE is_invalid = 0 AND is_consolidated = 0 "
+                        "ORDER BY importance ASC LIMIT %s",
+                        (overage,),
+                    )
+                    cap_pruned = cur.rowcount
+                    pruned_memories += cap_pruned
+                    logger.info(f"Hard cap: pruned {cap_pruned} low-importance memories (total was {total})")
 
                 # S2: Time decay on links not recalled recently
                 decay_amount = settings.MEMORY_LINK_TIME_DECAY_AMOUNT

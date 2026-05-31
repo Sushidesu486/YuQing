@@ -151,6 +151,46 @@ MYSQL_DATABASE=yuqing
 
 ---
 
+## 分支说明
+
+| 分支 | 定位 | 平台 | 特点 |
+|------|------|------|------|
+| `main` | 稳定版 | macOS | bge-base-zh, CPU 推理, 含说说+日记+睡眠优化 |
+| `feature/deploy-linux` | Linux 主开发 | Linux + GPU | bge-m3 (多语言), CUDA 加速, TUI 监控, 部署脚本 |
+
+```bash
+# macOS 轻量部署
+git clone https://github.com/Sushidesu486/My_YuQing.git
+cd YuQing && git checkout main
+
+# Linux GPU 部署
+git clone https://github.com/Sushidesu486/My_YuQing.git
+cd YuQing && git checkout feature/deploy-linux
+bash deploy/start.sh
+```
+
+### 功能对比
+
+| 功能 | main | deploy-linux |
+|------|:--:|:--:|
+| 说说 (poster) | ✅ | ✅ |
+| 日记系统 | ✅ | ✅ |
+| 消息分页 | ✅ | ✅ |
+| 睡眠参数优化 | ✅ | ✅ |
+| 记忆淘汰硬上限 | ✅ | ✅ |
+| 深色模式 | ✅ | ✅ |
+| 页面刷新自动滚底 | ✅ | ✅ |
+| ForceGraph 自适应 | ✅ | ✅ |
+| BGE 嵌入模型 | base-zh-v1.5 | m3 (中英混合) |
+| GPU CUDA 加速 | — | ✅ RTX 4060 |
+| GPU/CPU 内存管理 | ✅ cpu | ✅ cpu + cuda |
+| TUI 实时监控 | — | ✅ rich.live |
+| deploy/ 运维脚本 | — | ✅ |
+| 前端开发模式 | `npm run dev` | `bash deploy/start.sh` |
+| 前端生产模式 | — | `npx vite preview` |
+
+---
+
 ## 项目结构
 
 ```
