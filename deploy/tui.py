@@ -91,7 +91,12 @@ class LogWatcher:
                 self._pos = f.tell()
             except (OSError, ValueError):
                 self._pos = os.path.getsize(self.path)
-            self._pending = []
+
+    def commit(self):
+        for line in self._pending:
+            self.lines.append(line)
+        self.lines = self.lines[-5000:]
+        self._pending = []
 
     def visible(self, n: int) -> list[str]:
         if self.scroll > 0:
