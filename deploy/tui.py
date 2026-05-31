@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fcntl
 import os
-import re
 import subprocess
 import sys
 import termios
@@ -14,6 +13,7 @@ try:
     from rich.live import Live
     from rich.layout import Layout
     from rich.panel import Panel
+    from rich.text import Text
     from rich.console import Console
 except ImportError:
     print("rich not installed, run: pip install rich")
@@ -29,8 +29,6 @@ PID_FRONTEND = os.path.join(PROJECT_DIR, "logs", "frontend.pid")
 
 HISTORY_LINES = 200
 REFRESH_INTERVAL = 5
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _stdin_fd = sys.stdin.fileno()
 _stdin_old = None
 
@@ -61,10 +59,6 @@ def get_key() -> str:
         return ""
 
 
-def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text)
-
-
 # ── log watcher ──
 class LogWatcher:
     def __init__(self, path: str):
@@ -78,7 +72,7 @@ class LogWatcher:
         if not os.path.exists(self.path):
             return
         with open(self.path, "r") as f:
-            self.lines = [strip_ansi(line.rstrip("\n")) for line in f.readlines()[-HISTORY_LINES:]]
+            self.lines = [line.rstrip("\n") for line in f.readlines()[-HISTORY_LINES:]]
         self._pos = os.path.getsize(self.path)
 
     def poll(self):
@@ -97,7 +91,7 @@ class LogWatcher:
 
     def commit(self):
         for line in self._pending:
-            self.lines.append(strip_ansi(line))
+            self.lines.append(line)
         self.lines = self.lines[-5000:]
         self._pending = []
 
@@ -230,7 +224,7 @@ def build_log_panel(title: str, watcher: LogWatcher, n_lines: int, active: bool)
     body = "\n".join(vs) if vs else "(waiting for log…)"
     scroll_info = f" [dim](scrolled ↑{watcher.scroll})[/]" if watcher.scroll > 0 else ""
     border = "cyan" if active else "grey50"
-    return Panel(body, title=f"[bold]{title}[/]{scroll_info}", border_style=border)
+    return Panel(Text.from_ansi(body), title=f"[bold]{title}[/]{scroll_info}", border_style=border)
 
 
 def build(
