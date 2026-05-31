@@ -41,13 +41,28 @@ export function MessageList({ messages, isStreaming, highlightMessageId, hasMore
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevScrollHeightRef = useRef(0);
   const prevMessagesLengthRef = useRef(messages.length);
+  const initialLoadedRef = useRef(false);
+
+  // Scroll to bottom on initial load (instant, no smooth)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || messages.length === 0) return;
+    if (!initialLoadedRef.current) {
+      initialLoadedRef.current = true;
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [messages]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
     // If messages grew (loadMore prepended), preserve scroll position
-    if (messages.length > prevMessagesLengthRef.current && prevScrollHeightRef.current > 0) {
+    if (initialLoadedRef.current && messages.length > prevMessagesLengthRef.current && prevScrollHeightRef.current > 0) {
       const newScrollHeight = el.scrollHeight;
       el.scrollTop = newScrollHeight - prevScrollHeightRef.current;
       prevScrollHeightRef.current = 0;
@@ -55,8 +70,10 @@ export function MessageList({ messages, isStreaming, highlightMessageId, hasMore
 
     prevMessagesLengthRef.current = messages.length;
 
-    if (isAtBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isAtBottomRef.current && initialLoadedRef.current) {
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      });
     }
   }, [messages]);
 
