@@ -107,18 +107,29 @@ start_services() {
 
     echo ">> 启动后端..."
     cd "$PROJECT_DIR/backend"
-    HF_HUB_OFFLINE=1 PYTHONPATH=. nohup "$VENV_DIR/bin/python3" -m uvicorn app.main:app \
-        --host 0.0.0.0 --port 8000 \
-        >> "$LOG_DIR/backend.log" 2>&1 &
-    echo "$!" > "$PID_BACKEND"
-    echo "   后端 PID $(cat "$PID_BACKEND")"
+    if BE_PID=$(lsof -ti :8000 2>/dev/null | head -1); then
+        echo "   后端已在运行 (PID $BE_PID)"
+        echo "$BE_PID" > "$PID_BACKEND"
+    else
+        HF_HUB_OFFLINE=1 PYTHONPATH=. nohup "$VENV_DIR/bin/python3" -m uvicorn app.main:app \
+            --host 0.0.0.0 --port 8000 \
+            >> "$LOG_DIR/backend.log" 2>&1 &
+        sleep 2
+        echo "$!" > "$PID_BACKEND"
+        echo "   后端启动 (PID $(cat "$PID_BACKEND"))"
+    fi
 
     echo ">> 启动前端..."
     cd "$PROJECT_DIR/frontend"
-    nohup npx vite --host 0.0.0.0 --port 5173 \
-        >> "$LOG_DIR/frontend.log" 2>&1 &
-    echo "$!" > "$PID_FRONTEND"
-    echo "   前端 PID $(cat "$PID_FRONTEND")"
+    if FE_PID=$(lsof -ti :5173 2>/dev/null | head -1); then
+        echo "   前端已在运行 (PID $FE_PID)"
+        echo "$FE_PID" > "$PID_FRONTEND"
+    else
+        nohup npx vite --host 0.0.0.0 --port 5173 \
+            >> "$LOG_DIR/frontend.log" 2>&1 &
+        echo "$!" > "$PID_FRONTEND"
+        echo "   前端启动 (PID $(cat "$PID_FRONTEND"))"
+    fi
 
     LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     echo ""
