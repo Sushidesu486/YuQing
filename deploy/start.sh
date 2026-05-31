@@ -107,7 +107,8 @@ start_services() {
 
     echo ">> 启动后端..."
     cd "$PROJECT_DIR/backend"
-    if BE_PID=$(lsof -ti :8000 2>/dev/null | head -1); then
+    BE_PID=$(lsof -ti :8000 2>/dev/null || true)
+    if [ -n "$BE_PID" ]; then
         echo "   后端已在运行 (PID $BE_PID)"
         echo "$BE_PID" > "$PID_BACKEND"
     else
@@ -121,7 +122,8 @@ start_services() {
 
     echo ">> 启动前端..."
     cd "$PROJECT_DIR/frontend"
-    if FE_PID=$(lsof -ti :5173 2>/dev/null | head -1); then
+    FE_PID=$(lsof -ti :5173 2>/dev/null || true)
+    if [ -n "$FE_PID" ]; then
         echo "   前端已在运行 (PID $FE_PID)"
         echo "$FE_PID" > "$PID_FRONTEND"
     else
