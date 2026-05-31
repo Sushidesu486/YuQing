@@ -124,6 +124,8 @@ async def model_idle_gc_task():
     while True:
         try:
             maybe_unload_idle_model()
+            # Periodically force Python GC + PyTorch CPU cache cleanup to prevent
+            # CPU memory leak from model.encode() tensor allocations on macOS.
             gc.collect()
             try:
                 torch.cpu.empty_cache()
