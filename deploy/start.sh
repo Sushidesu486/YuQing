@@ -112,7 +112,7 @@ start_services() {
         echo "   后端已在运行 (PID $BE_PID)"
         echo "$BE_PID" > "$PID_BACKEND"
     else
-        HF_HUB_OFFLINE=1 PYTHONPATH=. nohup "$VENV_DIR/bin/python3" -m uvicorn app.main:app \
+        PYTHONPATH=. nohup "$VENV_DIR/bin/python3" -m uvicorn app.main:app \
             --host 0.0.0.0 --port 8000 \
             >> "$LOG_DIR/backend.log" 2>&1 &
         sleep 2
