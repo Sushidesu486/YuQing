@@ -223,8 +223,8 @@ export function useChat() {
           } else if (data.type === 'sticker') {
             setMessages((prev) => [
               ...prev,
-              { id: data.message_id || `sticker-${Date.now()}`, role: 'assistant', content: data.name,
-                content_type: 'sticker', sticker_name: data.name, created_at: new Date().toISOString() },
+              { id: data.message_id || `sticker-${Date.now()}`, role: 'assistant', content: data.name || '',
+                content_type: 'sticker', sticker_name: data.name || '', created_at: new Date().toISOString() },
             ]);
             // After receiving sticker(s), we can close the stream
             streamFinished = true;
@@ -305,8 +305,8 @@ export function useChat() {
                 if (data.type === 'sticker') {
                   setMessages((prev) => [
                     ...prev,
-                    { id: data.message_id || `sticker-${Date.now()}`, role: 'user', content: data.name,
-                      content_type: 'sticker', sticker_name: data.name },
+                    { id: data.message_id || `sticker-${Date.now()}`, role: 'user', content: data.name || '',
+                      content_type: 'sticker', sticker_name: data.name || '' },
                   ]);
                   // If this was a user sticker, also trigger YuQing's response
                   // by sending a descriptive text message

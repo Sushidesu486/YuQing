@@ -1,4 +1,3 @@
-import React from 'react';
 import { useConversations } from '../../hooks/useConversations';
 import type { Conversation } from '../../types';
 

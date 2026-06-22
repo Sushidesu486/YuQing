@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
@@ -25,8 +25,6 @@ export function Header({ onToggleSettings, onToggleSearch, onToggleMemory, onTog
     localStorage.setItem('yuqing_dark_mode', next ? '1' : '0');
     document.documentElement.classList.toggle('dark', next);
   };
-
-  const iconStyle = { fontSize: 'calc(1.25rem * var(--icon-scale))' };
 
   return (
     <header className="h-14 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 flex-shrink-0">
